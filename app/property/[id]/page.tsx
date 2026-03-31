@@ -428,7 +428,7 @@ export default function PropertySetupPage() {
                       Off-topic limit
                     </label>
                     <p className="text-[11px] text-foreground/35">
-                      Messages before auto-rejection. 0 = unlimited.
+                      Consecutive off-topic messages before auto-rejection. 0 = unlimited.
                     </p>
                     <input
                       type="number"

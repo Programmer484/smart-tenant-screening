@@ -235,17 +235,30 @@ export async function POST(req: Request) {
   const sessionId = typeof rec.sessionId === "string" ? rec.sessionId : null;
   const propertyId =
     typeof rec.propertyId === "string" ? rec.propertyId : null;
-  const clarificationPending = rec.clarificationPending === true;
-  const offTopicCount =
-    typeof rec.offTopicCount === "number" ? rec.offTopicCount : 0;
-  const qualifiedFollowUpCount =
-    typeof rec.qualifiedFollowUpCount === "number"
-      ? rec.qualifiedFollowUpCount
-      : 0;
-  const isQualified = rec.isQualified === true;
   const ai = resolveAiInstructions(
     rec.aiInstructions as Partial<AiInstructions> | undefined,
   );
+
+  // ── Load session state from DB (server-authoritative) ──
+  let clarificationPending = false;
+  let offTopicCount = 0;
+  let qualifiedFollowUpCount = 0;
+  let isQualified = false;
+
+  if (sessionId) {
+    const db = createServiceClient();
+    const { data: ses } = await db
+      .from("sessions")
+      .select("status, clarification_pending, off_topic_count, qualified_follow_up_count")
+      .eq("id", sessionId)
+      .maybeSingle();
+    if (ses) {
+      clarificationPending = ses.clarification_pending === true;
+      offTopicCount = ses.off_topic_count ?? 0;
+      qualifiedFollowUpCount = ses.qualified_follow_up_count ?? 0;
+      isQualified = ses.status === "qualified";
+    }
+  }
 
   if (messages.length === 0) {
     return NextResponse.json(
@@ -312,6 +325,18 @@ export async function POST(req: Request) {
     fields.length > 0 &&
     fields.every((f) => mergedAnswers[f.id] !== undefined);
 
+  // ── Update counters ──
+
+  if (!messageRelevant) {
+    offTopicCount += 1;
+  } else {
+    offTopicCount = 0; // reset on relevant message
+  }
+
+  if (isQualified) {
+    qualifiedFollowUpCount += 1;
+  }
+
   // ── Determine session status ──
 
   let sessionStatus:
@@ -321,10 +346,13 @@ export async function POST(req: Request) {
     | "qualified"
     | "completed" = "in_progress";
 
-  // Build context for the response call based on rule evaluation
   let responseContext = "";
 
-  if (firstViolation) {
+  // Off-topic limit exceeded → reject
+  if (ai.offTopicLimit > 0 && offTopicCount >= ai.offTopicLimit) {
+    sessionStatus = "rejected";
+    responseContext = `\n\nIMPORTANT — OFF-TOPIC REJECTION:\nThe applicant has sent ${offTopicCount} off-topic messages in a row (limit is ${ai.offTopicLimit}). Politely let them know you're closing the conversation because the screening wasn't making progress. Wish them well.`;
+  } else if (firstViolation) {
     const req = describeViolation(firstViolation);
     if (clarificationPending) {
       sessionStatus = "rejected";
@@ -334,18 +362,19 @@ export async function POST(req: Request) {
       responseContext = `\n\nIMPORTANT — ELIGIBILITY CONCERN:\nThe applicant's answer doesn't meet this requirement: ${req}. Gently let them know about the issue and give them a chance to correct themselves. Describe the requirement in natural, human-friendly language.`;
     }
   } else if (isQualified || allCollected) {
-    const followUps = qualifiedFollowUpCount + (isQualified ? 1 : 0);
     const limit = ai.qualifiedFollowUps;
 
     if (
       (limit === 0 && isQualified) ||
-      (limit > 0 && followUps >= limit) ||
+      (limit > 0 && qualifiedFollowUpCount >= limit) ||
       (!messageRelevant && isQualified)
     ) {
       sessionStatus = "completed";
     } else {
       sessionStatus = "qualified";
     }
+  } else if (!messageRelevant && offTopicCount > 0) {
+    responseContext = `\n\nNOTE: The applicant's message was off-topic (${offTopicCount}/${ai.offTopicLimit || "∞"} strikes). Gently redirect them back to the screening questions.`;
   }
 
   // ── PHASE 2: Generate response (with full context) ──
@@ -383,6 +412,9 @@ export async function POST(req: Request) {
     sessionStatus = "rejected";
   }
 
+  // Update clarification_pending for next round
+  const nextClarificationPending = sessionStatus === "clarifying";
+
   // ── Persist to Supabase (best-effort) ──
 
   const dbStatus =
@@ -407,6 +439,9 @@ export async function POST(req: Request) {
           answers: mergedAnswers,
           message_count: messages.length + 1,
           property_id: propertyId,
+          off_topic_count: offTopicCount,
+          qualified_follow_up_count: qualifiedFollowUpCount,
+          clarification_pending: nextClarificationPending,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "id" },

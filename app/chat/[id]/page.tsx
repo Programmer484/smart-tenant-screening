@@ -63,12 +63,10 @@ export default function ChatPage() {
   const [sending, setSending] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
 
-  // Lifecycle state
-  const [clarificationPending, setClarificationPending] = useState(false);
+  // Lifecycle state (server-authoritative via session DB)
   const [rejected, setRejected] = useState(false);
   const [completed, setCompleted] = useState(false);
   const [qualified, setQualified] = useState(false);
-  const [qualifiedFollowUpCount, setQualifiedFollowUpCount] = useState(0);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -105,9 +103,6 @@ export default function ChatPage() {
           messages: [{ role: "user", content: "(new conversation — introduce yourself and ask the first screening question)" }],
           sessionId: sid,
           propertyId: cfg.id,
-          clarificationPending: false,
-          qualifiedFollowUpCount: 0,
-          isQualified: false,
         }),
       });
       if (res.ok) {
@@ -176,7 +171,10 @@ export default function ChatPage() {
           })));
 
           if (data.status === "rejected") setRejected(true);
-          if (data.status === "qualified") setQualified(true);
+          if (data.status === "qualified") {
+            setQualified(true);
+            setCompleted(true);
+          }
         } else {
           // New session — get AI greeting via the chat API
           await fetchGreeting(cfg, sid);
@@ -222,9 +220,6 @@ export default function ChatPage() {
           messages: apiHistory,
           sessionId,
           propertyId: config.id,
-          clarificationPending,
-          qualifiedFollowUpCount,
-          isQualified: qualified,
         }),
       });
 
@@ -263,23 +258,14 @@ export default function ChatPage() {
         });
       }
 
-      // Update lifecycle state
+      // Update lifecycle state from server response
       if (status === "rejected") {
         setRejected(true);
-        setClarificationPending(false);
       } else if (status === "completed") {
         setCompleted(true);
         setQualified(true);
       } else if (status === "qualified") {
-        if (qualified) {
-          setQualifiedFollowUpCount((c) => c + 1);
-        }
         setQualified(true);
-        setClarificationPending(false);
-      } else if (status === "clarifying") {
-        setClarificationPending(true);
-      } else {
-        setClarificationPending(false);
       }
 
     } catch {
