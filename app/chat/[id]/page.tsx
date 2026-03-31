@@ -281,6 +281,33 @@ export default function ChatPage() {
     }
   }
 
+  async function restart() {
+    if (!config || !confirm("Start over? This will erase your current application.")) return;
+
+    // Delete session from DB
+    if (sessionId) {
+      try {
+        await fetch(`/api/session?sessionId=${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+      } catch { /* best-effort */ }
+    }
+
+    // Clear cookie and generate fresh session
+    const cn = cookieName(propertyId);
+    const newSid = crypto.randomUUID();
+    setCookie(cn, newSid);
+    setSessionId(newSid);
+
+    // Reset local state
+    setMessages([]);
+    setAnswers({});
+    setRejected(false);
+    setCompleted(false);
+    setQualified(false);
+    setInput("");
+
+    await fetchGreeting(config, newSid);
+  }
+
   const answeredCount = Object.keys(answers).length;
   const totalFields = config?.fields.length ?? 0;
 
@@ -305,6 +332,10 @@ export default function ChatPage() {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-3">
+          <button type="button" onClick={() => void restart()}
+            className="text-xs text-[#1a2e2a]/40 underline-offset-2 hover:text-[#1a2e2a]/70 hover:underline">
+            Start over
+          </button>
           <button type="button" onClick={() => setDebugOpen((o) => !o)}
             className="text-xs text-[#1a2e2a]/40 underline-offset-2 hover:text-[#1a2e2a]/70 hover:underline">
             {debugOpen ? "Hide debug" : "Debug"}

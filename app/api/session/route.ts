@@ -55,3 +55,16 @@ export async function GET(req: Request) {
   });
 }
 
+export async function DELETE(req: Request) {
+  const url = new URL(req.url);
+  const sessionId = url.searchParams.get("sessionId");
+  if (!sessionId) {
+    return NextResponse.json({ error: "sessionId is required" }, { status: 400 });
+  }
+
+  const db = createServiceClient();
+  await db.from("sessions").delete().eq("id", sessionId);
+
+  return NextResponse.json({ ok: true });
+}
+

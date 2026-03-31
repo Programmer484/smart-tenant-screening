@@ -1,8 +1,6 @@
 import type { LandlordField } from "./landlord-field";
 import type { LandlordRule } from "./landlord-rule";
 
-export type ListingLink = { label: string; url: string };
-
 export type PropertyLinks = {
   videoUrl: string;
   bookingUrl: string;
@@ -43,8 +41,6 @@ export type PropertyRecord = {
   user_id: string;
   title: string;
   description: string;
-  property_info: string;
-  intro_message: string;
   /** Ordered list of shared_fields IDs included in this listing */
   shared_field_ids: string[];
   /** Fields defined specifically for this property */
@@ -55,12 +51,6 @@ export type PropertyRecord = {
   status: "draft" | "published";
   created_at: string;
   updated_at: string;
-};
-
-/** A shared field as stored in the `shared_fields` table */
-export type SharedFieldRecord = LandlordField & {
-  user_id: string;
-  sort_order: number;
 };
 
 
