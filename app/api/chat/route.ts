@@ -272,16 +272,23 @@ export async function POST(req: Request) {
   }
 
   // ── PHASE 1: Extract fields ──
+  // Only send the last exchange (assistant + user) so the AI focuses on
+  // the newest message and doesn't re-extract from old ones.
 
   const extractSystem = buildSystemPrompt(
     title, description, fields, rules, answers, ai,
   );
 
+  const lastUserIdx = messages.findLastIndex((m) => m.role === "user");
+  const extractMessages: IncomingMessage[] = lastUserIdx >= 0
+    ? messages.slice(Math.max(0, lastUserIdx - 1))
+    : messages;
+
   let extractData;
   try {
     extractData = await callClaude(key, {
       system: extractSystem + "\n\nYour only job right now is to extract field values from the applicant's latest message. Do not write a reply.",
-      messages,
+      messages: extractMessages,
       tools: [EXTRACT_TOOL],
       tool_choice: { type: "tool", name: "extract_fields" },
     });
