@@ -4,6 +4,7 @@ import Link from "next/link";
 import type { PropertyRecord } from "@/lib/property";
 import { createNewProperty, deleteProperty } from "@/app/actions";
 import { DeleteButton } from "./delete-button";
+import { CopyLinkButton } from "./copy-link-button";
 
 function StatusBadge({ status }: { status: PropertyRecord["status"] }) {
   return status === "published" ? (
@@ -125,8 +126,9 @@ export default async function PropertiesPage() {
                         target="_blank"
                         className="rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a] transition-colors hover:bg-[#f7f9f8]"
                       >
-                        Preview
+                        Test
                       </Link>
+                      <CopyLinkButton path={`/chat/${p.id}`} />
                       <Link
                         href={`/applicants?property=${p.id}`}
                         className="rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a] transition-colors hover:bg-[#f7f9f8]"
