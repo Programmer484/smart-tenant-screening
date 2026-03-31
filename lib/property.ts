@@ -69,6 +69,3 @@ export function resolveFields(
   return [...sharedFields, ...own];
 }
 
-export function defaultIntroMessage(title: string): string {
-  return `Thank you for your interest in ${title || "this property"}. Please answer the following questions to help us determine your eligibility.`;
-}

@@ -93,7 +93,6 @@ function isValidExtraction(
 function buildSystemPrompt(
   title: string,
   description: string,
-  propertyInfo: string,
   fields: LandlordField[],
   rules: LandlordRule[],
   answers: Record<string, string>,
@@ -144,16 +143,13 @@ function buildSystemPrompt(
       ? "Do not answer questions about details not covered above. Redirect the applicant back to the screening questions."
       : "Only answer property questions using the property description and applicant-facing summary above. If the information is not there, say you don't have that detail and suggest contacting the landlord. Never invent details.";
 
-  const infoBlock = propertyInfo
-    ? `\n\nAPPLICANT-FACING SUMMARY (the applicant can see this):\n${propertyInfo}`
-    : "";
 
   let prompt = `You are a warm and professional rental screening assistant for the following property.
 
 Property: ${title}
 ---
 ${description}
----${infoBlock}
+---
 
 ELIGIBILITY REQUIREMENTS:
 ${rulesBlock}
@@ -223,8 +219,6 @@ export async function POST(req: Request) {
     typeof rec.title === "string" ? rec.title.trim() : "Rental Property";
   const description =
     typeof rec.description === "string" ? rec.description.trim() : "";
-  const propertyInfo =
-    typeof rec.propertyInfo === "string" ? rec.propertyInfo.trim() : "";
   const fields = Array.isArray(rec.fields)
     ? (rec.fields as LandlordField[])
     : [];
@@ -263,7 +257,7 @@ export async function POST(req: Request) {
   // ── PHASE 1: Extract fields ──
 
   const extractSystem = buildSystemPrompt(
-    title, description, propertyInfo, fields, rules, answers, ai,
+    title, description, fields, rules, answers, ai,
   );
 
   let extractData;
@@ -357,7 +351,7 @@ export async function POST(req: Request) {
   // ── PHASE 2: Generate response (with full context) ──
 
   const respondSystem = buildSystemPrompt(
-    title, description, propertyInfo, fields, rules, mergedAnswers, ai,
+    title, description, fields, rules, mergedAnswers, ai,
   ) + responseContext;
 
   let respondData;

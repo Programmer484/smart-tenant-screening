@@ -5,13 +5,13 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
 import type { PropertyRecord, ListingLink, AiInstructions } from "@/lib/property";
-import { DEFAULT_AI_INSTRUCTIONS, resolveAiInstructions, defaultIntroMessage } from "@/lib/property";
+import { DEFAULT_AI_INSTRUCTIONS, resolveAiInstructions } from "@/lib/property";
 import type { LandlordField } from "@/lib/landlord-field";
 import type { LandlordRule } from "@/lib/landlord-rule";
 import LandlordFieldsSection from "@/app/components/LandlordFieldsSection";
 import RulesSection from "@/app/components/RulesSection";
 
-const TABS = ["Questions", "Rules", "Property Info", "Messages", "Links", "AI Behavior"] as const;
+const TABS = ["Questions", "Rules", "Links", "AI Behavior"] as const;
 
 type Tab = (typeof TABS)[number];
 
@@ -54,8 +54,6 @@ export default function PropertySetupPage() {
   // Property state
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [propertyInfo, setPropertyInfo] = useState("");
-  const [introMessage, setIntroMessage] = useState("");
   const [ownFields, setOwnFields] = useState<LandlordField[]>([]);
   const [rules, setRules] = useState<LandlordRule[]>([]);
   const [links, setLinks] = useState<ListingLink[]>([]);
@@ -66,7 +64,6 @@ export default function PropertySetupPage() {
   const [allShared, setAllShared] = useState<LandlordField[]>([]);
   const [activeTab, setActiveTab] = useState<Tab>("Questions");
   const [loadingPhase, setLoadingPhase] = useState<null | "fields" | "rules">(null);
-  const [generatingInfo, setGeneratingInfo] = useState(false);
   const [saving, setSaving] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -88,8 +85,6 @@ export default function PropertySetupPage() {
       const p = propRes.data as PropertyRecord;
       setTitle(p.title);
       setDescription(p.description);
-      setPropertyInfo(p.property_info);
-      setIntroMessage(p.intro_message);
       setOwnFields(p.own_fields ?? []);
       setRules(p.rules ?? []);
       setLinks(p.links ?? []);
@@ -111,8 +106,6 @@ export default function PropertySetupPage() {
         .update({
           title: title.trim() || "New Property",
           description: description.trim(),
-          property_info: propertyInfo,
-          intro_message: introMessage,
           own_fields: ownFields,
           rules,
           links: links.filter((l) => l.label.trim() && l.url.trim()),
@@ -125,12 +118,8 @@ export default function PropertySetupPage() {
       setSaving(false);
       if (error) console.error("[save]", error);
     },
-    [id, title, description, propertyInfo, introMessage, ownFields, rules, links, aiInstructions, status, supabase], // eslint-disable-line react-hooks/exhaustive-deps
+    [id, title, description, ownFields, rules, links, aiInstructions, status, supabase], // eslint-disable-line react-hooks/exhaustive-deps
   );
-
-  function defaultIntro() {
-    return defaultIntroMessage(title.trim());
-  }
 
   // ── Convert property-specific → shared ──────────────────────────────
 
@@ -194,23 +183,6 @@ export default function PropertySetupPage() {
 
   // ── Property info generation ───────────────────────────────────────────
 
-  async function handleGenerateInfo() {
-    if (!description.trim()) return;
-    setGeneratingInfo(true);
-    try {
-      const res = await fetch("/api/generate-property-info", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description }),
-      });
-      const data = (await res.json()) as { propertyInfo?: string };
-      if (data.propertyInfo) setPropertyInfo(data.propertyInfo);
-    } catch (err) {
-      console.error("[generate-info]", err);
-    } finally {
-      setGeneratingInfo(false);
-    }
-  }
 
   // ─────────────────────────────────────────────────────────────────────────
 
@@ -393,55 +365,6 @@ export default function PropertySetupPage() {
               rules={rules}
               onChange={setRules}
             />
-          )}
-
-          {activeTab === "Property Info" && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm text-foreground/60">
-                  Applicant-facing summary. AI-generated from your description, editable.
-                </p>
-                <button
-                  type="button"
-                  onClick={handleGenerateInfo}
-                  disabled={!description.trim() || generatingInfo}
-                  className="shrink-0 rounded-md bg-teal-700 px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
-                >
-                  {generatingInfo ? "Generating…" : "Generate"}
-                </button>
-              </div>
-              <textarea
-                rows={10}
-                value={propertyInfo}
-                onChange={(e) => setPropertyInfo(e.target.value)}
-                placeholder="Property info visible to applicants…"
-                className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-4 py-3 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:outline-none focus:ring-2 focus:ring-teal-700/20"
-              />
-            </div>
-          )}
-
-          {activeTab === "Messages" && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm text-foreground/60">
-                  Opening message shown before the first screening question.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setIntroMessage(defaultIntro())}
-                  className="shrink-0 rounded-md border border-foreground/10 px-3 py-1.5 text-xs text-foreground/50 transition-colors hover:bg-white"
-                >
-                  Reset to default
-                </button>
-              </div>
-              <textarea
-                rows={6}
-                value={introMessage}
-                onChange={(e) => setIntroMessage(e.target.value)}
-                placeholder={defaultIntro()}
-                className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-4 py-3 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:outline-none focus:ring-2 focus:ring-teal-700/20"
-              />
-            </div>
           )}
 
           {activeTab === "Links" && (

@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import type { PropertyRecord, SharedFieldRecord, ListingLink, AiInstructions } from "@/lib/property";
-import { resolveFields, defaultIntroMessage, resolveAiInstructions } from "@/lib/property";
+import type { PropertyRecord, ListingLink, AiInstructions } from "@/lib/property";
+import { resolveFields, resolveAiInstructions } from "@/lib/property";
 import type { LandlordField } from "@/lib/landlord-field";
 import type { LandlordRule } from "@/lib/landlord-rule";
 
@@ -17,8 +17,6 @@ type ChatConfig = {
   id: string;
   title: string;
   description: string;
-  propertyInfo: string;
-  introMessage: string;
   fields: LandlordField[];
   rules: LandlordRule[];
   links: ListingLink[];
@@ -27,11 +25,6 @@ type ChatConfig = {
 
 function generateId() {
   return Math.random().toString(36).slice(2, 9);
-}
-
-function firstGreeting(intro: string, fields: LandlordField[]) {
-  const first = fields[0]?.label;
-  return first ? `${intro}\n\n${first}` : intro;
 }
 
 function ExtractionLog({ extracted }: { extracted: Extraction[] }) {
@@ -68,7 +61,6 @@ export default function ChatPage() {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
-  const [infoOpen, setInfoOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
 
   // Lifecycle state
@@ -98,6 +90,37 @@ export default function ChatPage() {
     document.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${maxAge}; Path=/; SameSite=Lax`;
   }
 
+  async function fetchGreeting(cfg: ChatConfig, sid: string) {
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: cfg.title,
+          description: cfg.description,
+          fields: cfg.fields,
+          rules: cfg.rules,
+          aiInstructions: cfg.aiInstructions,
+          answers: {},
+          messages: [{ role: "user", content: "(new conversation — introduce yourself and ask the first screening question)" }],
+          sessionId: sid,
+          propertyId: cfg.id,
+          clarificationPending: false,
+          qualifiedFollowUpCount: 0,
+          isQualified: false,
+        }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { reply?: string };
+        setMessages([{ id: generateId(), role: "assistant", text: data.reply ?? "Welcome! How can I help you today?" }]);
+      } else {
+        setMessages([{ id: generateId(), role: "assistant", text: `Welcome! I'm here to help with your application for ${cfg.title}.` }]);
+      }
+    } catch {
+      setMessages([{ id: generateId(), role: "assistant", text: `Welcome! I'm here to help with your application for ${cfg.title}.` }]);
+    }
+  }
+
   useEffect(() => {
     async function load() {
       const [propRes, sharedRes] = await Promise.all([
@@ -114,16 +137,13 @@ export default function ChatPage() {
       }
 
       const p = propRes.data as PropertyRecord;
-      const sharedAll = (sharedRes.data as SharedFieldRecord[] | null) ?? [];
+      const sharedAll = (sharedRes.data as LandlordField[] | null) ?? [];
       const fields = resolveFields(p, sharedAll);
-      const intro = p.intro_message?.trim() || defaultIntroMessage(p.title);
 
       const cfg: ChatConfig = {
         id: p.id,
         title: p.title,
         description: p.description,
-        propertyInfo: p.property_info,
-        introMessage: intro,
         fields,
         rules: (p.rules as LandlordRule[]) ?? [],
         links: (p.links as ListingLink[]) ?? [],
@@ -149,23 +169,20 @@ export default function ChatPage() {
           };
 
           setAnswers(data.answers ?? {});
-          const restored = (data.messages ?? []).map((m) => ({
+          setMessages((data.messages ?? []).map((m) => ({
             id: generateId(),
             role: m.role,
             text: m.content,
-          }));
-          setMessages([
-            { id: "init", role: "assistant", text: firstGreeting(intro, fields) },
-            ...restored,
-          ]);
+          })));
 
           if (data.status === "rejected") setRejected(true);
           if (data.status === "qualified") setQualified(true);
         } else {
-          setMessages([{ id: "init", role: "assistant", text: firstGreeting(intro, fields) }]);
+          // New session — get AI greeting via the chat API
+          await fetchGreeting(cfg, sid);
         }
       } catch {
-        setMessages([{ id: "init", role: "assistant", text: firstGreeting(intro, fields) }]);
+        await fetchGreeting(cfg, sid);
       }
     }
     void load();
@@ -198,7 +215,6 @@ export default function ChatPage() {
         body: JSON.stringify({
           title: config.title,
           description: config.description,
-          propertyInfo: config.propertyInfo,
           fields: config.fields,
           rules: config.rules,
           aiInstructions: config.aiInstructions,
@@ -301,24 +317,12 @@ export default function ChatPage() {
           )}
         </div>
         <div className="flex shrink-0 items-center gap-3">
-          {config?.propertyInfo && (
-            <button type="button" onClick={() => setInfoOpen((o) => !o)}
-              className="text-xs text-teal-700 underline-offset-2 hover:underline">
-              {infoOpen ? "Hide info" : "Property info"}
-            </button>
-          )}
           <button type="button" onClick={() => setDebugOpen((o) => !o)}
             className="text-xs text-[#1a2e2a]/40 underline-offset-2 hover:text-[#1a2e2a]/70 hover:underline">
             {debugOpen ? "Hide debug" : "Debug"}
           </button>
         </div>
       </header>
-
-      {infoOpen && config?.propertyInfo && (
-        <div className="border-b border-black/8 bg-white/60 px-6 py-4">
-          <p className="text-sm leading-relaxed text-[#1a2e2a]/80 whitespace-pre-wrap">{config.propertyInfo}</p>
-        </div>
-      )}
 
       {debugOpen && (
         <div className="border-b border-black/8 bg-black/[0.03] px-6 py-4">
