@@ -4,8 +4,8 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
-import type { PropertyRecord, ListingLink, AiInstructions } from "@/lib/property";
-import { DEFAULT_AI_INSTRUCTIONS, resolveAiInstructions } from "@/lib/property";
+import type { PropertyRecord, PropertyLinks, AiInstructions } from "@/lib/property";
+import { DEFAULT_AI_INSTRUCTIONS, DEFAULT_LINKS, resolveAiInstructions } from "@/lib/property";
 import type { LandlordField } from "@/lib/landlord-field";
 import type { LandlordRule } from "@/lib/landlord-rule";
 import LandlordFieldsSection from "@/app/components/LandlordFieldsSection";
@@ -56,7 +56,7 @@ export default function PropertySetupPage() {
   const [description, setDescription] = useState("");
   const [ownFields, setOwnFields] = useState<LandlordField[]>([]);
   const [rules, setRules] = useState<LandlordRule[]>([]);
-  const [links, setLinks] = useState<ListingLink[]>([]);
+  const [links, setLinks] = useState<PropertyLinks>(DEFAULT_LINKS);
   const [aiInstructions, setAiInstructions] = useState<AiInstructions>(DEFAULT_AI_INSTRUCTIONS);
   const [status, setStatus] = useState<"draft" | "published">("draft");
 
@@ -87,7 +87,7 @@ export default function PropertySetupPage() {
       setDescription(p.description);
       setOwnFields(p.own_fields ?? []);
       setRules(p.rules ?? []);
-      setLinks(p.links ?? []);
+      setLinks({ ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) });
       setAiInstructions(resolveAiInstructions(p.ai_instructions));
       setStatus(p.status);
 
@@ -108,7 +108,7 @@ export default function PropertySetupPage() {
           description: description.trim(),
           own_fields: ownFields,
           rules,
-          links: links.filter((l) => l.label.trim() && l.url.trim()),
+          links,
           ai_instructions: aiInstructions,
           status,
           updated_at: new Date().toISOString(),
@@ -368,51 +368,36 @@ export default function PropertySetupPage() {
           )}
 
           {activeTab === "Links" && (
-            <div className="space-y-3">
+            <div className="space-y-5">
               <p className="text-sm text-foreground/60">
-                Links sent to qualified applicants at the end of the chat.
+                Shared with qualified applicants at the end of the screening.
               </p>
-              {links.map((link, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    placeholder="Label"
-                    value={link.label}
-                    onChange={(e) => {
-                      const next = [...links];
-                      next[i] = { ...next[i], label: e.target.value };
-                      setLinks(next);
-                    }}
-                    className="w-32 rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm focus:border-teal-700/40 focus:outline-none"
-                  />
-                  <input
-                    type="url"
-                    placeholder="https://…"
-                    value={link.url}
-                    onChange={(e) => {
-                      const next = [...links];
-                      next[i] = { ...next[i], url: e.target.value };
-                      setLinks(next);
-                    }}
-                    className="flex-1 rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm focus:border-teal-700/40 focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setLinks(links.filter((_, j) => j !== i))}
-                    className="text-foreground/30 hover:text-red-500"
-                    aria-label="Remove link"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-              <button
-                type="button"
-                onClick={() => setLinks([...links, { label: "", url: "" }])}
-                className="text-sm text-teal-700 hover:underline"
-              >
-                + Add link
-              </button>
+
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-foreground/60">
+                  Video tour link
+                </label>
+                <input
+                  type="url"
+                  placeholder="https://…"
+                  value={links.videoUrl}
+                  onChange={(e) => setLinks((prev) => ({ ...prev, videoUrl: e.target.value }))}
+                  className="w-full rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm focus:border-teal-700/40 focus:outline-none"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-foreground/60">
+                  Booking link
+                </label>
+                <input
+                  type="url"
+                  placeholder="https://…"
+                  value={links.bookingUrl}
+                  onChange={(e) => setLinks((prev) => ({ ...prev, bookingUrl: e.target.value }))}
+                  className="w-full rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm focus:border-teal-700/40 focus:outline-none"
+                />
+              </div>
             </div>
           )}
 

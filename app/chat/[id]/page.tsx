@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
-import type { PropertyRecord, ListingLink, AiInstructions } from "@/lib/property";
-import { resolveFields, resolveAiInstructions } from "@/lib/property";
+import type { PropertyRecord, PropertyLinks, AiInstructions } from "@/lib/property";
+import { resolveFields, resolveAiInstructions, DEFAULT_LINKS } from "@/lib/property";
 import type { LandlordField } from "@/lib/landlord-field";
 import type { LandlordRule } from "@/lib/landlord-rule";
 
@@ -19,7 +19,7 @@ type ChatConfig = {
   description: string;
   fields: LandlordField[];
   rules: LandlordRule[];
-  links: ListingLink[];
+  links: PropertyLinks;
   aiInstructions: AiInstructions;
 };
 
@@ -98,6 +98,7 @@ export default function ChatPage() {
           description: cfg.description,
           fields: cfg.fields,
           rules: cfg.rules,
+          links: cfg.links,
           aiInstructions: cfg.aiInstructions,
           answers: {},
           messages: [{ role: "user", content: "(new conversation — introduce yourself and ask the first screening question)" }],
@@ -141,7 +142,7 @@ export default function ChatPage() {
         description: p.description,
         fields,
         rules: (p.rules as LandlordRule[]) ?? [],
-        links: (p.links as ListingLink[]) ?? [],
+        links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) },
         aiInstructions: resolveAiInstructions(p.ai_instructions),
       };
       setConfig(cfg);
@@ -215,6 +216,7 @@ export default function ChatPage() {
           description: config.description,
           fields: config.fields,
           rules: config.rules,
+          links: config.links,
           aiInstructions: config.aiInstructions,
           answers,
           messages: apiHistory,

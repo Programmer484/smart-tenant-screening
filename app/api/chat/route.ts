@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import type { LandlordField, FieldValueKind } from "@/lib/landlord-field";
 import type { LandlordRule } from "@/lib/landlord-rule";
-import type { AiInstructions } from "@/lib/property";
-import { resolveAiInstructions } from "@/lib/property";
+import type { AiInstructions, PropertyLinks } from "@/lib/property";
+import { resolveAiInstructions, DEFAULT_LINKS } from "@/lib/property";
 import { createServiceClient } from "@/lib/supabase/service";
 import { evaluateRules, describeViolation } from "@/lib/rule-engine";
 import { callClaude, ClaudeApiError } from "@/lib/anthropic";
@@ -232,6 +232,10 @@ export async function POST(req: Request) {
   const messages = Array.isArray(rec.messages)
     ? (rec.messages as IncomingMessage[])
     : [];
+  const links: PropertyLinks = {
+    ...DEFAULT_LINKS,
+    ...(rec.links && typeof rec.links === "object" ? rec.links as Partial<PropertyLinks> : {}),
+  };
   const sessionId = typeof rec.sessionId === "string" ? rec.sessionId : null;
   const propertyId =
     typeof rec.propertyId === "string" ? rec.propertyId : null;
@@ -372,6 +376,21 @@ export async function POST(req: Request) {
       sessionStatus = "completed";
     } else {
       sessionStatus = "qualified";
+    }
+
+    // Build links context for qualified applicants
+    const linkLines: string[] = [];
+    if (links.videoUrl) linkLines.push(`- Video tour: ${links.videoUrl}`);
+    if (links.bookingUrl) linkLines.push(`- Book a viewing: ${links.bookingUrl}`);
+    if (linkLines.length > 0) {
+      responseContext = `\n\nIMPORTANT — QUALIFIED APPLICANT:\nThe applicant meets all requirements. Congratulate them and share these links:\n${linkLines.join("\n")}\nInclude the full URLs in your message so the applicant can click them.`;
+      if (sessionStatus === "completed") {
+        responseContext += `\nThis is the final message — wrap up warmly.`;
+      }
+    } else if (sessionStatus === "completed") {
+      responseContext = `\n\nIMPORTANT — QUALIFIED APPLICANT (FINAL MESSAGE):\nThe applicant meets all requirements. Congratulate them and let them know someone will be in touch. Wrap up warmly.`;
+    } else {
+      responseContext = `\n\nNOTE: The applicant is qualified! Let them know they meet the requirements. Answer any remaining questions they have about the property.`;
     }
   } else if (!messageRelevant && offTopicCount > 0) {
     responseContext = `\n\nNOTE: The applicant's message was off-topic (${offTopicCount}/${ai.offTopicLimit || "∞"} strikes). Gently redirect them back to the screening questions.`;

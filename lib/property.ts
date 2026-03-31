@@ -3,6 +3,13 @@ import type { LandlordRule } from "./landlord-rule";
 
 export type ListingLink = { label: string; url: string };
 
+export type PropertyLinks = {
+  videoUrl: string;
+  bookingUrl: string;
+};
+
+export const DEFAULT_LINKS: PropertyLinks = { videoUrl: "", bookingUrl: "" };
+
 export type AiExample = { user: string; assistant: string };
 export type AiInstructions = {
   style: string;
@@ -43,7 +50,7 @@ export type PropertyRecord = {
   /** Fields defined specifically for this property */
   own_fields: LandlordField[];
   rules: LandlordRule[];
-  links: ListingLink[];
+  links: PropertyLinks;
   ai_instructions: AiInstructions;
   status: "draft" | "published";
   created_at: string;
