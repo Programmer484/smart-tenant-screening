@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import { ConfirmDialog } from "@/app/components/ConfirmDialog";
 import type { PropertyRecord, PropertyLinks, AiInstructions } from "@/lib/property";
 import { resolveFields, resolveAiInstructions, DEFAULT_LINKS } from "@/lib/property";
 import type { LandlordField } from "@/lib/landlord-field";
@@ -62,6 +63,15 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [pageReady, setPageReady] = useState(false);
+
+  const [showDebug] = useState(() =>
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("debug") === "1"
+  );
+
+  const [restartDialogOpen, setRestartDialogOpen] = useState(false);
 
   // Lifecycle state (server-authoritative via session DB)
   const [rejected, setRejected] = useState(false);
@@ -70,6 +80,7 @@ export default function ChatPage() {
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const inputDisabled = rejected || completed;
 
@@ -129,6 +140,7 @@ export default function ChatPage() {
           id: "init", role: "assistant",
           text: "This listing could not be found.",
         }]);
+        setPageReady(true);
         return;
       }
 
@@ -147,14 +159,12 @@ export default function ChatPage() {
       };
       setConfig(cfg);
 
-      // Cookie-based session id (resume on refresh, same browser/device)
       const cn = cookieName(propertyId);
       const existing = getCookie(cn);
       const sid = existing && existing.length > 10 ? existing : crypto.randomUUID();
       if (!existing) setCookie(cn, sid);
       setSessionId(sid);
 
-      // Restore prior state (server reads cookie + uses service role)
       try {
         const res = await fetch(`/api/session?propertyId=${encodeURIComponent(propertyId)}`);
         if (res.ok) {
@@ -177,12 +187,12 @@ export default function ChatPage() {
             setCompleted(true);
           }
         } else {
-          // New session — get AI greeting via the chat API
           await fetchGreeting(cfg, sid);
         }
       } catch {
         await fetchGreeting(cfg, sid);
       }
+      setPageReady(true);
     }
     void load();
   }, [propertyId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -190,6 +200,17 @@ export default function ChatPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Close overflow menu on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    }
+    if (menuOpen) document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [menuOpen]);
 
   async function send() {
     const text = input.trim();
@@ -201,7 +222,6 @@ export default function ChatPage() {
     setInput("");
     setSending(true);
 
-    // Include init message so AI sees the greeting with the first question
     const apiHistory: ApiMessage[] = nextMessages.map((m) => ({
       role: m.role,
       content: m.text,
@@ -260,7 +280,6 @@ export default function ChatPage() {
         });
       }
 
-      // Update lifecycle state from server response
       if (status === "rejected") {
         setRejected(true);
       } else if (status === "completed") {
@@ -282,22 +301,20 @@ export default function ChatPage() {
   }
 
   async function restart() {
-    if (!config || !confirm("Start over? This will erase your current application.")) return;
+    if (!config) return;
+    setRestartDialogOpen(false);
 
-    // Delete session from DB
     if (sessionId) {
       try {
         await fetch(`/api/session?sessionId=${encodeURIComponent(sessionId)}`, { method: "DELETE" });
       } catch { /* best-effort */ }
     }
 
-    // Clear cookie and generate fresh session
     const cn = cookieName(propertyId);
     const newSid = crypto.randomUUID();
     setCookie(cn, newSid);
     setSessionId(newSid);
 
-    // Reset local state
     setMessages([]);
     setAnswers({});
     setRejected(false);
@@ -310,10 +327,34 @@ export default function ChatPage() {
 
   const answeredCount = Object.keys(answers).length;
   const totalFields = config?.fields.length ?? 0;
+  const hasLinks = config?.links.videoUrl || config?.links.bookingUrl;
+
+  // Loading splash while config loads
+  if (!pageReady) {
+    return (
+      <div className="flex h-[100dvh] flex-col items-center justify-center" style={{ background: "#f0ede6" }}>
+        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-teal-800/10 text-teal-800">
+          <svg width="24" height="24" viewBox="0 0 18 18" fill="none" aria-hidden>
+            <rect x="2" y="7" width="14" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
+            <path d="M5 7V5a4 4 0 0 1 8 0v2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+            <rect x="7" y="11" width="4" height="3" rx="0.75" fill="currentColor" />
+          </svg>
+        </div>
+        <p className="mt-3 text-sm text-[#1a2e2a]/50">Loading your application&hellip;</p>
+        <span className="mt-2 flex gap-1">
+          {[0, 1, 2].map((i) => (
+            <span key={i} className="h-1.5 w-1.5 animate-bounce rounded-full bg-[#1a2e2a]/25"
+              style={{ animationDelay: `${i * 150}ms` }} />
+          ))}
+        </span>
+      </div>
+    );
+  }
 
   return (
-    <div className="flex h-full min-h-screen flex-col" style={{ background: "#f0ede6" }}>
-      <header className="flex items-center gap-3 border-b border-black/8 bg-[#f0ede6] px-6 py-4">
+    <div className="flex h-[100dvh] flex-col" style={{ background: "#f0ede6" }}>
+      {/* Header */}
+      <header className="flex items-center gap-3 border-b border-black/8 bg-[#f0ede6] px-4 py-3">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-teal-800/10 text-teal-800">
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden>
             <rect x="2" y="7" width="14" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
@@ -321,30 +362,67 @@ export default function ChatPage() {
             <rect x="7" y="11" width="4" height="3" rx="0.75" fill="currentColor" />
           </svg>
         </div>
-        <div className="flex flex-1 items-baseline gap-3 min-w-0">
-          <h1 className="truncate text-sm font-semibold text-[#1a2e2a]">
-            {config?.title || "Rental Application"}
-          </h1>
-          {totalFields > 0 && (
-            <span className="shrink-0 text-xs text-[#1a2e2a]/45">
-              {answeredCount}/{totalFields} answered
-            </span>
+        <h1 className="min-w-0 flex-1 truncate text-sm font-semibold text-[#1a2e2a]">
+          {config?.title || "Rental Application"}
+        </h1>
+        {/* Overflow menu */}
+        <div ref={menuRef} className="relative">
+          <button
+            type="button"
+            onClick={() => setMenuOpen((o) => !o)}
+            aria-label="Menu"
+            className="flex h-10 w-10 items-center justify-center rounded-lg text-[#1a2e2a]/40 transition-colors hover:bg-black/5 hover:text-[#1a2e2a]/70"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+              <circle cx="8" cy="3" r="1.5" />
+              <circle cx="8" cy="8" r="1.5" />
+              <circle cx="8" cy="13" r="1.5" />
+            </svg>
+          </button>
+          {menuOpen && (
+            <div className="absolute right-0 top-full z-20 mt-1 min-w-[160px] rounded-xl border border-black/8 bg-white py-1 shadow-lg">
+              <button
+                type="button"
+                onClick={() => { setMenuOpen(false); setRestartDialogOpen(true); }}
+                className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-[#1a2e2a]/70 transition-colors hover:bg-black/[0.03]"
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
+                  <path d="M1.5 7a5.5 5.5 0 1 1 1.02 3.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                  <path d="M1.5 3.5V7H5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                Start over
+              </button>
+              {showDebug && (
+                <button
+                  type="button"
+                  onClick={() => { setMenuOpen(false); setDebugOpen((o) => !o); }}
+                  className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm text-[#1a2e2a]/70 transition-colors hover:bg-black/[0.03]"
+                >
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
+                    <rect x="1" y="1" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="1.3" />
+                    <path d="M4 5h6M4 7.5h4M4 10h5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                  </svg>
+                  {debugOpen ? "Hide debug" : "Show debug"}
+                </button>
+              )}
+            </div>
           )}
-        </div>
-        <div className="flex shrink-0 items-center gap-3">
-          <button type="button" onClick={() => void restart()}
-            className="text-xs text-[#1a2e2a]/40 underline-offset-2 hover:text-[#1a2e2a]/70 hover:underline">
-            Start over
-          </button>
-          <button type="button" onClick={() => setDebugOpen((o) => !o)}
-            className="text-xs text-[#1a2e2a]/40 underline-offset-2 hover:text-[#1a2e2a]/70 hover:underline">
-            {debugOpen ? "Hide debug" : "Debug"}
-          </button>
         </div>
       </header>
 
-      {debugOpen && (
-        <div className="border-b border-black/8 bg-black/[0.03] px-6 py-4">
+      {/* Progress bar */}
+      {totalFields > 0 && (
+        <div className="h-1 bg-black/5">
+          <div
+            className="h-full bg-teal-600 transition-all duration-500"
+            style={{ width: `${(answeredCount / totalFields) * 100}%` }}
+          />
+        </div>
+      )}
+
+      {/* Debug panel (only with ?debug=1) */}
+      {showDebug && debugOpen && (
+        <div className="border-b border-black/8 bg-black/[0.03] px-4 py-4">
           <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[#1a2e2a]/40">Answers state</p>
           {Object.keys(answers).length === 0 ? (
             <p className="font-mono text-[11px] text-[#1a2e2a]/40">No answers yet.</p>
@@ -356,7 +434,8 @@ export default function ChatPage() {
         </div>
       )}
 
-      <main className="flex flex-1 flex-col items-center overflow-y-auto px-4 py-8">
+      {/* Messages */}
+      <main className="flex flex-1 flex-col items-center overflow-y-auto px-4 py-4 sm:py-8">
         <div className="flex w-full max-w-xl flex-col gap-3">
           {messages.map((msg) => (
             <div key={msg.id} className="flex flex-col">
@@ -364,10 +443,14 @@ export default function ChatPage() {
                 <div className={`max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed shadow-sm ${
                   msg.role === "assistant" ? "rounded-tl-sm bg-white text-[#1a2e2a]" : "rounded-tr-sm bg-teal-800 text-white"
                 }`}>
-                  {msg.text}
+                  {msg.text.split(/(\*\*[^*]+\*\*)/).map((part, i) =>
+                    part.startsWith("**") && part.endsWith("**")
+                      ? <strong key={i}>{part.slice(2, -2)}</strong>
+                      : part
+                  )}
                 </div>
               </div>
-              {msg.role === "assistant" && msg.extracted && (
+              {showDebug && msg.role === "assistant" && msg.extracted && (
                 <ExtractionLog extracted={msg.extracted} />
               )}
             </div>
@@ -390,14 +473,52 @@ export default function ChatPage() {
         </div>
       </main>
 
-      <footer className="border-t border-black/8 bg-[#f0ede6] px-4 py-4">
+      {/* Footer */}
+      <footer
+        className="border-t border-black/8 bg-[#f0ede6] px-4 pt-4"
+        style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}
+      >
         {completed ? (
-          <div className="mx-auto flex w-full max-w-xl items-center gap-3 rounded-xl border border-teal-200 bg-teal-50 px-4 py-3">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="shrink-0 text-teal-600" aria-hidden>
-              <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.4" />
-              <path d="M5 8.5l2 2 4-4.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            <p className="text-sm text-teal-800">Your application is complete. We'll be in touch!</p>
+          <div className="mx-auto w-full max-w-xl space-y-3">
+            <div className="flex items-center gap-3 rounded-xl border border-teal-200 bg-teal-50 px-4 py-3">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" className="shrink-0 text-teal-600" aria-hidden>
+                <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.4" />
+                <path d="M5 8.5l2 2 4-4.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <p className="text-sm text-teal-800">Your application is complete. We&apos;ll be in touch!</p>
+            </div>
+            {hasLinks && (
+              <div className="flex flex-wrap gap-2">
+                {config?.links.videoUrl && (
+                  <a
+                    href={config.links.videoUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 rounded-lg border border-teal-200 bg-white px-4 py-2.5 text-sm font-medium text-teal-800 transition-colors hover:bg-teal-50"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
+                      <rect x="1" y="2.5" width="12" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+                      <path d="M5.5 5v4l3.5-2-3.5-2Z" fill="currentColor" />
+                    </svg>
+                    Watch the video tour
+                  </a>
+                )}
+                {config?.links.bookingUrl && (
+                  <a
+                    href={config.links.bookingUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-2 rounded-lg border border-teal-200 bg-white px-4 py-2.5 text-sm font-medium text-teal-800 transition-colors hover:bg-teal-50"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
+                      <rect x="1.5" y="2" width="11" height="10.5" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+                      <path d="M1.5 5.5h11M4.5 1v2.5M9.5 1v2.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                    </svg>
+                    Book a viewing
+                  </a>
+                )}
+              </div>
+            )}
           </div>
         ) : rejected ? (
           <div className="mx-auto flex w-full max-w-xl items-center gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
@@ -405,7 +526,7 @@ export default function ChatPage() {
               <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.4" />
               <path d="M8 4.5v4M8 10.5v1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
             </svg>
-            <p className="text-sm text-red-700">This application has been closed.</p>
+            <p className="text-sm text-red-700">This application has been closed. Contact the property manager for questions.</p>
           </div>
         ) : (
           <div className="mx-auto flex w-full max-w-xl items-end gap-3">
@@ -431,6 +552,15 @@ export default function ChatPage() {
           </div>
         )}
       </footer>
+      <ConfirmDialog
+        open={restartDialogOpen}
+        title="Start over?"
+        description="This will erase your current application and begin a new screening."
+        confirmLabel="Start over"
+        destructive
+        onConfirm={() => void restart()}
+        onCancel={() => setRestartDialogOpen(false)}
+      />
     </div>
   );
 }

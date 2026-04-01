@@ -48,7 +48,6 @@ export type PropertyRecord = {
   rules: LandlordRule[];
   links: PropertyLinks;
   ai_instructions: AiInstructions;
-  status: "draft" | "published";
   created_at: string;
   updated_at: string;
 };

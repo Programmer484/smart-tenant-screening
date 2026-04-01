@@ -1,8 +1,11 @@
 "use client";
 
 import { Fragment, useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase/client";
 import Link from "next/link";
+import { toast } from "sonner";
+import { createClient } from "@/lib/supabase/client";
+import { ApplicantsTableSkeleton } from "@/app/components/Skeleton";
+import { ConfirmDialog } from "@/app/components/ConfirmDialog";
 
 type Session = {
   id: string;
@@ -23,6 +26,17 @@ type ChatMessage = {
 
 const STATUS_OPTIONS = ["all", "qualified", "rejected", "in_progress"] as const;
 type StatusFilter = (typeof STATUS_OPTIONS)[number];
+
+function extractName(answers: Record<string, string>): string | null {
+  const nameKeys = ["name", "full_name", "applicant_name", "tenant_name", "first_name"];
+  for (const key of nameKeys) {
+    if (answers[key] && String(answers[key]).trim()) return String(answers[key]).trim();
+  }
+  for (const [key, val] of Object.entries(answers)) {
+    if (key.toLowerCase().includes("name") && String(val).trim()) return String(val).trim();
+  }
+  return null;
+}
 
 function badge(status: string | null) {
   if (status === "qualified")
@@ -50,6 +64,8 @@ export default function ApplicantsPage() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
+  const [propertyContext, setPropertyContext] = useState<{ id: string; title: string } | null>(null);
 
   const propertyId = typeof window !== "undefined"
     ? new URLSearchParams(window.location.search).get("property")
@@ -63,7 +79,11 @@ export default function ApplicantsPage() {
         .select("*")
         .order("created_at", { ascending: false });
 
-      if (propertyId) query = query.eq("property_id", propertyId);
+      if (propertyId) {
+        query = query.eq("property_id", propertyId);
+        supabase.from("properties").select("id,title").eq("id", propertyId).single()
+          .then(({ data }) => { if (data) setPropertyContext({ id: data.id, title: data.title }); });
+      }
 
       const { data, error } = await query;
       if (error) { setError(error.message); }
@@ -72,6 +92,13 @@ export default function ApplicantsPage() {
     }
     load();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function copyChatLink() {
+    if (!propertyContext) return;
+    const url = `${window.location.origin}/chat/${propertyContext.id}`;
+    await navigator.clipboard.writeText(url);
+    toast.success("Chat link copied");
+  }
 
   function togglePanel(sessionId: string, type: "answers" | "chat") {
     if (expanded?.sessionId === sessionId && expanded.type === type) {
@@ -95,16 +122,17 @@ export default function ApplicantsPage() {
     }
   }
 
-  async function deleteSession(id: string, title: string) {
-    if (!confirm(`Delete this session from "${title}"? This cannot be undone.`)) return;
+  async function deleteSession(id: string) {
+    setDeleteTarget(null);
     setDeleting(id);
     try {
       const { error: msgErr } = await supabase.from("messages").delete().eq("session_id", id);
-      if (msgErr) { console.error("[delete messages]", msgErr); return; }
+      if (msgErr) { console.error("[delete messages]", msgErr); toast.error("Failed to delete session"); return; }
       const { error: sesErr } = await supabase.from("sessions").delete().eq("id", id);
-      if (sesErr) { console.error("[delete session]", sesErr); return; }
+      if (sesErr) { console.error("[delete session]", sesErr); toast.error("Failed to delete session"); return; }
       setSessions((prev) => prev.filter((s) => s.id !== id));
       if (expanded?.sessionId === id) setExpanded(null);
+      toast.success("Session deleted");
     } finally {
       setDeleting(null);
     }
@@ -117,20 +145,49 @@ export default function ApplicantsPage() {
   });
 
   return (
-    <main className="min-h-screen bg-[#f7f9f8] p-6 sm:p-10">
+    <main className="p-6 sm:p-10">
       <div className="mx-auto max-w-5xl">
-        <div className="mb-8 flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-semibold text-[#1a2e2a]">Applicants</h1>
-            <p className="mt-0.5 text-sm text-[#1a2e2a]/50">
-              {sessions.length} session{sessions.length !== 1 ? "s" : ""} total
-            </p>
-          </div>
-          <Link href="/"
-            className="rounded-lg border border-[#1a2e2a]/15 px-4 py-1.5 text-sm text-[#1a2e2a]/60 transition-colors hover:bg-white">
-            ← Properties
-          </Link>
+        <div className="mb-8">
+          <h1 className="text-xl font-semibold text-[#1a2e2a]">Applicants</h1>
+          <p className="mt-0.5 text-sm text-[#1a2e2a]/50">
+            {sessions.length} session{sessions.length !== 1 ? "s" : ""} total
+          </p>
         </div>
+
+        {propertyContext && (
+          <div className="mb-6 flex items-center justify-between rounded-xl border border-teal-100 bg-teal-50/50 px-5 py-3">
+            <div className="flex items-center gap-2 text-sm">
+              <Link
+                href={`/property/${propertyContext.id}`}
+                className="font-medium text-teal-800 hover:underline"
+              >
+                ← {propertyContext.title}
+              </Link>
+              <span className="text-teal-700/30">·</span>
+              <span className="text-teal-700/60">
+                {sessions.length} applicant{sessions.length !== 1 ? "s" : ""}
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => void copyChatLink()}
+                className="flex items-center gap-1.5 rounded-lg border border-teal-200 bg-white px-3 py-1.5 text-xs font-medium text-teal-800 transition-colors hover:bg-teal-50"
+              >
+                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden>
+                  <path d="M10.5 5h-1a2 2 0 0 0-2 2v0a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v0a2 2 0 0 0-2-2ZM4.5 5h-1a2 2 0 0 0-2 2v0a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v0a2 2 0 0 0-2-2ZM5 7h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                </svg>
+                Share link
+              </button>
+              <Link
+                href="/applicants"
+                className="text-xs text-teal-700/50 transition-colors hover:text-teal-700"
+              >
+                View all →
+              </Link>
+            </div>
+          </div>
+        )}
 
         <div className="mb-4 flex gap-1">
           {STATUS_OPTIONS.map((opt) => (
@@ -145,7 +202,7 @@ export default function ApplicantsPage() {
           ))}
         </div>
 
-        {loading && <p className="text-sm text-[#1a2e2a]/50">Loading…</p>}
+        {loading && <ApplicantsTableSkeleton />}
         {error && <p className="rounded-lg bg-red-50 p-4 text-sm text-red-700">{error}</p>}
         {!loading && !error && visible.length === 0 && (
           <p className="text-sm text-[#1a2e2a]/40">No applicants yet for this filter.</p>
@@ -157,9 +214,9 @@ export default function ApplicantsPage() {
               <thead>
                 <tr className="border-b border-[#1a2e2a]/8 bg-[#f7f9f8] text-left text-[11px] font-semibold uppercase tracking-wider text-[#1a2e2a]/40">
                   <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Applicant</th>
                   <th className="px-4 py-3">Listing</th>
                   <th className="px-4 py-3">Messages</th>
-                  <th className="px-4 py-3">Started</th>
                   <th className="px-4 py-3">Updated</th>
                   <th className="px-4 py-3"></th>
                 </tr>
@@ -169,9 +226,11 @@ export default function ApplicantsPage() {
                   <Fragment key={s.id}>
                     <tr className="border-b border-[#1a2e2a]/6 last:border-0 hover:bg-[#f7f9f8]">
                       <td className="px-4 py-3">{badge(s.status)}</td>
-                      <td className="px-4 py-3 font-medium text-[#1a2e2a]">{s.listing_title}</td>
+                      <td className="px-4 py-3 font-medium text-[#1a2e2a]">
+                        {extractName(s.answers) ?? <span className="text-[#1a2e2a]/30">Anonymous</span>}
+                      </td>
+                      <td className="px-4 py-3 text-[#1a2e2a]/60">{s.listing_title}</td>
                       <td className="px-4 py-3 text-[#1a2e2a]/60">{s.message_count}</td>
-                      <td className="px-4 py-3 text-[#1a2e2a]/50">{formatDate(s.created_at)}</td>
                       <td className="px-4 py-3 text-[#1a2e2a]/50">{formatDate(s.updated_at)}</td>
                       <td className="px-4 py-3">
                         <div className="flex gap-3">
@@ -189,7 +248,7 @@ export default function ApplicantsPage() {
                             }`}>
                             {expanded?.sessionId === s.id && expanded.type === "chat" ? "hide" : "chat log"}
                           </button>
-                          <button onClick={() => deleteSession(s.id, s.listing_title)}
+                          <button onClick={() => setDeleteTarget({ id: s.id, title: s.listing_title })}
                             disabled={deleting === s.id}
                             className="text-[11px] font-medium text-red-400 hover:text-red-600 hover:underline disabled:opacity-50">
                             {deleting === s.id ? "…" : "delete"}
@@ -256,6 +315,15 @@ export default function ApplicantsPage() {
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={deleteTarget !== null}
+        title="Delete this session?"
+        description={deleteTarget ? `This will permanently remove the session from "${deleteTarget.title}" and all its messages.` : ""}
+        confirmLabel="Delete"
+        destructive
+        onConfirm={() => deleteTarget && void deleteSession(deleteTarget.id)}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </main>
   );
 }

@@ -22,6 +22,15 @@ function generateId() {
   return Math.random().toString(36).slice(2, 9);
 }
 
+function labelToFieldId(label: string): string {
+  return label
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .trim()
+    .replace(/\s+/g, "_")
+    .slice(0, 40);
+}
+
 function emptyField(): LandlordField & { _key: string } {
   return {
     _key: generateId(),
@@ -41,6 +50,7 @@ function FieldRow({
   onDelete,
   onMoveUp,
   onMoveDown,
+  action,
 }: {
   field: FieldWithKey;
   index: number;
@@ -49,6 +59,7 @@ function FieldRow({
   onDelete: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
+  action?: React.ReactNode;
 }) {
   const uid = useId();
   const idError = field.id ? validateLandlordFieldId(field.id) : null;
@@ -58,8 +69,17 @@ function FieldRow({
       ? validateEnumOptions(field.options)
       : null;
 
+  function handleLabelChange(newLabel: string) {
+    const prevAutoId = labelToFieldId(field.label);
+    const updated: FieldWithKey = { ...field, label: newLabel };
+    if (!field.id || field.id === prevAutoId) {
+      updated.id = labelToFieldId(newLabel);
+    }
+    onChange(updated);
+  }
+
   return (
-    <div className="flex gap-3 rounded-xl border border-foreground/10 bg-background p-4 shadow-sm">
+    <div className="flex gap-3 rounded-xl border border-foreground/10 bg-background p-3 shadow-sm">
       {/* Reorder controls */}
       <div className="flex flex-col items-center gap-0.5 pt-1 text-foreground/30">
         <button
@@ -95,14 +115,14 @@ function FieldRow({
       </div>
 
       {/* Field content */}
-      <div className="flex flex-1 flex-col gap-3">
-        {/* Label */}
+      <div className="flex flex-1 flex-col gap-2">
+        {/* Label — primary input */}
         <div>
           <input
             id={`${uid}-label`}
             type="text"
             value={field.label}
-            onChange={(e) => onChange({ ...field, label: e.target.value })}
+            onChange={(e) => handleLabelChange(e.target.value)}
             placeholder="Question or label for this field…"
             className="w-full rounded-lg border border-foreground/10 bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-foreground/35 focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/15"
           />
@@ -111,57 +131,48 @@ function FieldRow({
           )}
         </div>
 
-        {/* Id + Type + Required row */}
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="flex min-w-0 flex-1 flex-col gap-1">
-            <label htmlFor={`${uid}-id`} className="text-xs text-foreground/50">
-              Field Name
-            </label>
-            <input
-              id={`${uid}-id`}
-              type="text"
-              value={field.id}
-              onChange={(e) => onChange({ ...field, id: e.target.value })}
-              placeholder="snake_case_name"
-              className="w-full rounded-lg border border-foreground/10 bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-foreground/35 focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/15"
-            />
-            {idError && (
-              <p className="text-xs text-red-500">{idError}</p>
-            )}
-          </div>
+        {/* Compact meta row: ID · Type · Action */}
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            id={`${uid}-id`}
+            type="text"
+            value={field.id}
+            onChange={(e) => onChange({ ...field, id: e.target.value })}
+            placeholder="field_id"
+            className="w-40 rounded-md border border-foreground/8 bg-foreground/[0.02] px-2 py-1 font-mono text-xs text-foreground/60 placeholder:text-foreground/25 focus:border-foreground/20 focus:outline-none"
+          />
+          <select
+            id={`${uid}-kind`}
+            value={field.value_kind}
+            onChange={(e) => {
+              const k = e.target.value as FieldValueKind;
+              const next: FieldWithKey = { ...field, value_kind: k };
+              if (k === "enum") {
+                next.options =
+                  field.options?.length ? [...field.options] : ["", ""];
+              } else {
+                delete next.options;
+              }
+              onChange(next);
+            }}
+            className="rounded-md border border-foreground/8 bg-foreground/[0.02] px-2 py-1 text-xs text-foreground/60 focus:border-foreground/20 focus:outline-none"
+          >
+            {FIELD_VALUE_KINDS.map((k) => (
+              <option key={k} value={k}>
+                {KIND_LABELS[k]}
+              </option>
+            ))}
+          </select>
 
-          <div className="flex flex-col gap-1">
-            <label htmlFor={`${uid}-kind`} className="text-xs text-foreground/50">
-              Type
-            </label>
-            <select
-              id={`${uid}-kind`}
-              value={field.value_kind}
-              onChange={(e) => {
-                const k = e.target.value as FieldValueKind;
-                const next: FieldWithKey = { ...field, value_kind: k };
-                if (k === "enum") {
-                  next.options =
-                    field.options?.length ? [...field.options] : ["", ""];
-                } else {
-                  delete next.options;
-                }
-                onChange(next);
-              }}
-              className="rounded-lg border border-foreground/10 bg-background px-3 py-2 text-sm text-foreground focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/15"
-            >
-              {FIELD_VALUE_KINDS.map((k) => (
-                <option key={k} value={k}>
-                  {KIND_LABELS[k]}
-                </option>
-              ))}
-            </select>
-          </div>
-
+          {action && <div className="ml-auto">{action}</div>}
         </div>
 
+        {idError && (
+          <p className="text-xs text-red-500">{idError}</p>
+        )}
+
         {field.value_kind === "enum" ? (
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-2 pt-1">
             <span className="text-xs text-foreground/50">
               Answer choices (at least two)
             </span>
@@ -222,17 +233,10 @@ function FieldRow({
         type="button"
         onClick={onDelete}
         aria-label="Delete field"
-        className="mt-1 shrink-0 rounded-lg p-1.5 text-red-400/70 transition-colors hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/30"
+        className="mt-1 shrink-0 rounded-lg p-1.5 text-foreground/25 transition-colors hover:bg-red-50 hover:text-red-500"
       >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <path
-            d="M2 4h12M5 4V2.5A1.5 1.5 0 0 1 6.5 1h3A1.5 1.5 0 0 1 11 2.5V4m2 0-.75 9A1.5 1.5 0 0 1 10.75 14.5h-5.5A1.5 1.5 0 0 1 3.75 13L3 4"
-            stroke="currentColor"
-            strokeWidth="1.25"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path d="M6.5 7v4M9.5 7v4" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
         </svg>
       </button>
     </div>
@@ -248,7 +252,6 @@ export default function LandlordFieldsSection({
   fields: LandlordField[];
   onChange: (fields: LandlordField[]) => void;
   fieldAction?: (field: LandlordField) => React.ReactNode;
-  /** Return false to cancel deletion. Called with the field about to be removed. */
   onBeforeDelete?: (field: LandlordField) => boolean;
 }) {
   function fingerprint(f: LandlordField[]) {
@@ -306,30 +309,21 @@ export default function LandlordFieldsSection({
   }
 
   return (
-    <section className="flex flex-col gap-4">
-      <h2 className="text-xl font-medium tracking-tight text-foreground">
-        Applicant fields
-      </h2>
-
+    <section className="flex flex-col gap-3">
       {rows.length > 0 && (
         <div className="flex flex-col gap-3">
           {rows.map((field, i) => (
-            <div key={field._key} className="flex items-start gap-2">
-              <div className="flex-1">
-                <FieldRow
-                  field={field}
-                  index={i}
-                  total={rows.length}
-                  onChange={(updated) => handleChange(i, updated)}
-                  onDelete={() => handleDelete(i)}
-                  onMoveUp={() => handleMoveUp(i)}
-                  onMoveDown={() => handleMoveDown(i)}
-                />
-              </div>
-              {fieldAction && field.id && (
-                <div className="pt-2">{fieldAction(field)}</div>
-              )}
-            </div>
+            <FieldRow
+              key={field._key}
+              field={field}
+              index={i}
+              total={rows.length}
+              onChange={(updated) => handleChange(i, updated)}
+              onDelete={() => handleDelete(i)}
+              onMoveUp={() => handleMoveUp(i)}
+              onMoveDown={() => handleMoveDown(i)}
+              action={fieldAction && field.id ? fieldAction(field) : undefined}
+            />
           ))}
         </div>
       )}
