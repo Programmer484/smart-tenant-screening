@@ -4,7 +4,7 @@ import { useState, useEffect, useRef, useId } from "react";
 import type { LandlordField } from "@/lib/landlord-field";
 import {
   OPERATORS_BY_KIND,
-  OPERATOR_LABELS,
+  operatorLabel,
   type LandlordRule,
   defaultOperatorForKind,
   defaultValueForKind,
@@ -141,7 +141,7 @@ function RuleRow({
             >
               {operators.map((op) => (
                 <option key={op} value={op}>
-                  {OPERATOR_LABELS[op] ?? op}
+                  {operatorLabel(op, field?.value_kind)}
                 </option>
               ))}
             </select>

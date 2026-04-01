@@ -144,39 +144,19 @@ function buildSystemPrompt(
       : "Only answer property questions using the property description and applicant-facing summary above. If the information is not there, say you don't have that detail and suggest contacting the landlord. Never invent details.";
 
 
-  let prompt = `You are a warm and professional rental screening assistant for the following property.
+  let prompt = `You are a rental screening assistant for "${title}".
 
-Property: ${title}
----
+PROPERTY:
 ${description}
----
 
-ELIGIBILITY REQUIREMENTS:
+RULES:
 ${rulesBlock}
 
-COLLECTED SO FAR:
-${answeredBlock}
-
-STILL NEED:
-${unansweredBlock}
-
-YOUR JOB:
-1. ${groundingInstruction}
-2. Extract ALL screening values from the applicant's message — for BOTH unanswered fields AND corrections to already-collected fields. If the applicant contradicts a previous answer (e.g. changes "no pets" to "I have a bird"), you MUST extract the updated value. Values should be plain strings: numbers like "3500", booleans as "true" or "false".
-3. ${nextInstruction}
-
-Keep your reply concise and conversational. One question at a time.
-
-ENDING CONVERSATIONS:
-Set end_conversation to true when the conversation is no longer productive:
-- The applicant repeatedly refuses to provide required information after being asked 2+ times.
-- The applicant is clearly uncooperative, trolling, or not genuinely applying.
-- The conversation has stalled and isn't making progress toward completing the screening.
-When ending, your closing message MUST include the specific reason why the conversation is being closed (e.g. "because we weren't able to collect the required information" or "because the property requires no pets"). Then thank them for their time and let them know they can start a new conversation if they change their mind.
-In all other cases, set end_conversation to false.`;
+COLLECTED: ${answeredBlock}
+REMAINING: ${unansweredBlock}`;
 
   if (ai.style) {
-    prompt += `\n\nLANDLORD STYLE INSTRUCTIONS:\n${ai.style}`;
+    prompt += `\n\nSTYLE (follow these instructions closely):\n${ai.style}`;
   }
 
   if (ai.examples?.length) {
@@ -185,9 +165,16 @@ In all other cases, set end_conversation to false.`;
       .map((e) => `Tenant: "${e.user}"\nYou: "${e.assistant}"`)
       .join("\n\n");
     if (pairs) {
-      prompt += `\n\nEXAMPLE CONVERSATIONS (match this style):\n${pairs}`;
+      prompt += `\n\nEXAMPLES (match this tone and style):\n${pairs}`;
     }
   }
+
+  prompt += `\n\nINSTRUCTIONS:
+- ${groundingInstruction}
+- Extract screening values from each message, including corrections to previous answers. Values: plain strings, numbers like "3500", booleans as "true"/"false".
+- ${nextInstruction}
+- One question at a time.
+- Set end_conversation to true only if the applicant refuses info after 2+ asks, is clearly not applying, or the conversation has stalled. Include the reason in your closing message. Otherwise set it to false.`;
 
   return prompt;
 }

@@ -21,6 +21,20 @@ export const OPERATOR_LABELS: Record<string, string> = {
   "<=": "less than or equal to",
 };
 
+const DATE_OPERATOR_LABELS: Record<string, string> = {
+  "==": "is on",
+  "!=": "is not on",
+  ">": "is after",
+  ">=": "is on or after",
+  "<": "is before",
+  "<=": "is on or before",
+};
+
+export function operatorLabel(op: string, kind?: FieldValueKind): string {
+  if (kind === "date") return DATE_OPERATOR_LABELS[op] ?? op;
+  return OPERATOR_LABELS[op] ?? op;
+}
+
 export type LandlordRule = {
   /** Unique id for this rule row */
   id: string;

@@ -90,6 +90,15 @@ const OP_PHRASES: Record<string, string> = {
   "<=":  "must be at most",
 };
 
+const DATE_OP_PHRASES: Record<string, string> = {
+  "==":  "must be on",
+  "!=":  "must not be on",
+  ">":   "must be after",
+  ">=":  "must be on or after",
+  "<":   "must be before",
+  "<=":  "must be on or before",
+};
+
 /** Human-readable description of a rule, e.g. "Monthly income must be at least 3000" */
 export function describeViolation(v: RuleViolation): string {
   if (v.field.value_kind === "boolean") {
@@ -102,6 +111,7 @@ export function describeViolation(v: RuleViolation): string {
         : `applicants must answer "no" to: ${v.field.label}`;
     }
   }
-  const phrase = OP_PHRASES[v.rule.operator] ?? v.rule.operator;
+  const phrases = v.field.value_kind === "date" ? DATE_OP_PHRASES : OP_PHRASES;
+  const phrase = phrases[v.rule.operator] ?? v.rule.operator;
   return `${v.field.label} ${phrase} ${v.rule.value}`;
 }
