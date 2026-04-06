@@ -4,7 +4,7 @@ import type { LandlordRule } from "@/lib/landlord-rule";
 import type { AiInstructions, PropertyLinks } from "@/lib/property";
 import { resolveAiInstructions, DEFAULT_LINKS } from "@/lib/property";
 import { createServiceClient } from "@/lib/supabase/service";
-import { evaluateRules, describeViolation } from "@/lib/rule-engine";
+import { evaluateRules, evaluateRule, describeViolation } from "@/lib/rule-engine";
 import { callClaude, ClaudeApiError } from "@/lib/anthropic";
 
 type IncomingMessage = { role: "user" | "assistant"; content: string };
@@ -90,6 +90,18 @@ function isValidExtraction(
 
 // ─── System prompt ──────────────────────────────────────────────────
 
+function getActiveFields(
+  fields: LandlordField[],
+  rules: LandlordRule[],
+  answers: Record<string, string>,
+): LandlordField[] {
+  return fields.filter(f => {
+     const askRules = rules.filter(r => r.action === "ask" && r.targetFieldId === f.id);
+     if (askRules.length === 0) return true;
+     return askRules.some(r => evaluateRule(r, fields, answers) === true);
+  });
+}
+
 function buildSystemPrompt(
   title: string,
   description: string,
@@ -98,8 +110,9 @@ function buildSystemPrompt(
   answers: Record<string, string>,
   ai: AiInstructions,
 ): string {
+  const activeFields = getActiveFields(fields, rules, answers);
   const answered = fields.filter((f) => answers[f.id] !== undefined);
-  const unanswered = fields.filter((f) => answers[f.id] === undefined);
+  const unanswered = activeFields.filter((f) => answers[f.id] === undefined);
   const nextField = unanswered[0] ?? null;
 
   const answeredBlock =
@@ -128,11 +141,13 @@ function buildSystemPrompt(
   const rulesBlock =
     rules.length > 0
       ? rules
+          .filter(r => r.action === "reject")
           .map((r) => {
-            const field = fields.find((f) => f.id === r.fieldId);
-            return field
-              ? `  - ${field.label} ${r.operator} ${r.value}`
-              : null;
+            const parts = r.conditions.map((c) => {
+              const field = fields.find((f) => f.id === c.fieldId);
+              return field ? `${field.label} ${c.operator} ${c.value}` : null;
+            }).filter(Boolean);
+            return parts.length > 0 ? `  - Reject if: ${parts.join(" AND ")}` : null;
           })
           .filter(Boolean)
           .join("\n")
@@ -319,9 +334,10 @@ export async function POST(req: Request) {
 
   const violations = evaluateRules(rules, fields, mergedAnswers);
   const firstViolation = violations[0] ?? null;
+  const activeFieldsForCompletion = getActiveFields(fields, rules, mergedAnswers);
   const allCollected =
-    fields.length > 0 &&
-    fields.every((f) => mergedAnswers[f.id] !== undefined);
+    activeFieldsForCompletion.length > 0 &&
+    activeFieldsForCompletion.every((f) => mergedAnswers[f.id] !== undefined);
 
   // ── Update counters ──
 
@@ -351,7 +367,7 @@ export async function POST(req: Request) {
     sessionStatus = "rejected";
     responseContext = `\n\nIMPORTANT — OFF-TOPIC REJECTION:\nThe applicant has sent ${offTopicCount} consecutive off-topic messages (limit: ${ai.offTopicLimit}). Close the conversation and state the reason.`;
   } else if (firstViolation) {
-    const req = describeViolation(firstViolation);
+    const req = describeViolation(firstViolation, fields);
     if (clarificationPending) {
       sessionStatus = "rejected";
       responseContext = `\n\nIMPORTANT — REJECTION:\nRequirement not met: ${req}. They already had a chance to clarify.\n${ai.rejectionPrompt}`;

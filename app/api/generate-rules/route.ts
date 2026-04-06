@@ -78,9 +78,13 @@ function parseGeneratedRule(
   }
   const rule: LandlordRule = {
     id: generateId(),
-    fieldId: r.fieldId,
-    operator: r.operator,
-    value: r.value,
+    action: "reject",
+    conditions: [{
+      id: generateId(),
+      fieldId: r.fieldId,
+      operator: r.operator,
+      value: r.value,
+    }]
   };
   if (validateRule(rule, fields) !== null) return null;
   return rule;

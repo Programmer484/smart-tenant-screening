@@ -18,6 +18,26 @@ const TABS = ["Questions", "Rules", "Links", "AI Behavior"] as const;
 
 type Tab = (typeof TABS)[number];
 
+function generateId() {
+  return Math.random().toString(36).slice(2, 9);
+}
+
+function migrateRules(rawRules: any[]): LandlordRule[] {
+  return rawRules.map((r) => {
+    if (r.action) return r as LandlordRule;
+    return {
+      id: r.id || generateId(),
+      action: "reject",
+      conditions: [{
+        id: generateId(),
+        fieldId: r.fieldId || "",
+        operator: r.operator || "==",
+        value: r.value || ""
+      }]
+    };
+  });
+}
+
 function SharedFieldsList({ allShared }: { allShared: LandlordField[] }) {
   if (allShared.length === 0) {
     return (
@@ -94,13 +114,14 @@ export default function PropertySetupPage() {
       const p = propRes.data as PropertyRecord;
       setTitle(p.title);
       setDescription(p.description);
+      const migratedRules = migrateRules((p.rules as any[]) ?? []);
       setOwnFields(p.own_fields ?? []);
-      setRules(p.rules ?? []);
+      setRules(migratedRules);
       setLinks({ ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) });
       setAiInstructions(resolveAiInstructions(p.ai_instructions));
 
       setAllShared((sharedRes.data ?? []) as LandlordField[]);
-      lastSavedRef.current = JSON.stringify({ title: p.title, description: p.description, ownFields: p.own_fields ?? [], rules: p.rules ?? [], links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) }, aiInstructions: resolveAiInstructions(p.ai_instructions) });
+      lastSavedRef.current = JSON.stringify({ title: p.title, description: p.description, ownFields: p.own_fields ?? [], rules: migratedRules, links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) }, aiInstructions: resolveAiInstructions(p.ai_instructions) });
       setPageLoading(false);
     }
     void load();
@@ -203,7 +224,7 @@ export default function PropertySetupPage() {
         body: JSON.stringify({ description, fields: resolvedFields }),
       });
       const rulesData = (await rulesRes.json()) as { rules?: LandlordRule[] };
-      setRules(rulesData.rules ?? []);
+      setRules(migrateRules(rulesData.rules ?? []));
       toast.success("Questions and rules generated — review them, then save and share!");
     } catch (err) {
       console.error("[generate]", err);
@@ -417,12 +438,14 @@ export default function PropertySetupPage() {
                   <LandlordFieldsSection
                     fields={ownFields}
                     onChange={setOwnFields}
+                    allFields={allResolvedFields}
+                    rules={rules}
+                    onRulesChange={setRules}
                     onBeforeDelete={(field) => {
-                      const linked = rules.filter((r) => r.fieldId === field.id);
+                      const linked = rules.filter((r) => r.conditions.some(c => c.fieldId === field.id) || r.targetFieldId === field.id);
                       if (linked.length === 0) return true;
-                      const names = linked.map((r) => `${field.label} ${r.operator} ${r.value}`).join("\n  ");
                       setPendingDeleteField(field);
-                      setDeleteFieldDialog({ field, linkedRules: names });
+                      setDeleteFieldDialog({ field, linkedRules: `${linked.length} linked rule(s)` });
                       return false;
                     }}
                     fieldAction={(field) => (
@@ -725,7 +748,7 @@ export default function PropertySetupPage() {
         destructive
         onConfirm={() => {
           if (pendingDeleteField) {
-            setRules((prev) => prev.filter((r) => r.fieldId !== pendingDeleteField.id));
+            setRules((prev) => prev.filter((r) => !r.conditions.some(c => c.fieldId === pendingDeleteField.id) && r.targetFieldId !== pendingDeleteField.id));
             setOwnFields((prev) => prev.filter((f) => f.id !== pendingDeleteField.id));
           }
           setDeleteFieldDialog(null);

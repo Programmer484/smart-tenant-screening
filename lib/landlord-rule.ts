@@ -35,14 +35,23 @@ export function operatorLabel(op: string, kind?: FieldValueKind): string {
   return OPERATOR_LABELS[op] ?? op;
 }
 
+export type RuleCondition = {
+  id: string;
+  fieldId: string;
+  operator: string;
+  value: string;
+};
+
+export type RuleAction = "reject" | "ask";
+
 export type LandlordRule = {
   /** Unique id for this rule row */
   id: string;
-  /** References a LandlordField id */
-  fieldId: string;
-  operator: string;
-  /** Stored as string; interpreted at runtime based on field's value_kind */
-  value: string;
+  action: RuleAction;
+  /** The field to ask if action === "ask" */
+  targetFieldId?: string;
+  /** Evaluated with AND logic */
+  conditions: RuleCondition[];
 };
 
 export function defaultOperatorForKind(kind: FieldValueKind): string {
@@ -55,22 +64,35 @@ export function defaultValueForKind(kind: FieldValueKind): string {
   return "";
 }
 
+export function validateCondition(
+  cond: RuleCondition,
+  fields: LandlordField[],
+): string | null {
+  if (!cond.fieldId) return "Select a field";
+  const field = fields.find((f) => f.id === cond.fieldId);
+  if (!field) return "Field not found";
+  const ops = OPERATORS_BY_KIND[field.value_kind];
+  if (!ops) return `Invalid field type "${field.value_kind}"`;
+  if (!ops.includes(cond.operator)) return "Invalid operator for this field type";
+  if (!cond.value.trim()) return "Value is required";
+  if (field.value_kind === "number" && isNaN(Number(cond.value))) {
+    return "Value must be a number";
+  }
+  if (field.value_kind === "enum" && field.options && !field.options.includes(cond.value)) {
+    return "Value must be one of the allowed options";
+  }
+  return null;
+}
+
 export function validateRule(
   rule: LandlordRule,
   fields: LandlordField[],
 ): string | null {
-  if (!rule.fieldId) return "Select a field";
-  const field = fields.find((f) => f.id === rule.fieldId);
-  if (!field) return "Field not found";
-  const ops = OPERATORS_BY_KIND[field.value_kind];
-  if (!ops) return `Invalid field type "${field.value_kind}"`;
-  if (!ops.includes(rule.operator)) return "Invalid operator for this field type";
-  if (!rule.value.trim()) return "Value is required";
-  if (field.value_kind === "number" && isNaN(Number(rule.value))) {
-    return "Value must be a number";
-  }
-  if (field.value_kind === "enum" && field.options && !field.options.includes(rule.value)) {
-    return "Value must be one of the allowed options";
+  if (rule.action === "ask" && !rule.targetFieldId) return "Select a question to ask";
+  if (rule.conditions.length === 0) return "Add at least one condition";
+  for (const c of rule.conditions) {
+    const err = validateCondition(c, fields);
+    if (err) return err;
   }
   return null;
 }
