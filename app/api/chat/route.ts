@@ -1,15 +1,15 @@
 import { NextResponse } from "next/server";
 import type { LandlordField, FieldValueKind } from "@/lib/landlord-field";
 import {
-  isFieldVisibilityRule,
   normalizeRulesList,
   type LandlordRule,
 } from "@/lib/landlord-rule";
-import type { Question } from "@/lib/question";
+import { validateQuestionTree, type Question } from "@/lib/question";
+import { findNextQuestion, isInterviewComplete } from "@/lib/question-flow";
 import type { AiInstructions, PropertyLinks } from "@/lib/property";
 import { resolveAiInstructions, DEFAULT_LINKS } from "@/lib/property";
 import { createServiceClient } from "@/lib/supabase/service";
-import { evaluateRules, evaluateRule, describeViolation } from "@/lib/rule-engine";
+import { evaluateRules, describeViolation } from "@/lib/rule-engine";
 import { callClaude, ClaudeApiError } from "@/lib/anthropic";
 
 type IncomingMessage = { role: "user" | "assistant"; content: string };
@@ -96,41 +96,6 @@ function isValidExtraction(
 // ─── Question / field resolution ────────────────────────────────────
 
 /**
- * Given questions and fields, find the next question to ask.
- * A question is "done" when ALL of its fieldIds have been answered.
- * Also checks field-visibility rules on each question's fields.
- */
-function findNextQuestion(
-  questions: Question[],
-  fields: LandlordField[],
-  rules: LandlordRule[],
-  answers: Record<string, string>,
-): Question | null {
-  const sorted = [...questions].sort((a, b) => a.sort_order - b.sort_order);
-
-  for (const q of sorted) {
-    // Check if ALL fields for this question are answered
-    const allFieldsFilled = q.fieldIds.every((fid) => answers[fid] !== undefined);
-    if (allFieldsFilled) continue;
-
-    // Field-visibility rules: if a field has them, its question is only active when at least one rule’s conditions match
-    const someFieldActive = q.fieldIds.some((fid) => {
-      const visibilityRules = rules.filter(
-        (r) => isFieldVisibilityRule(r) && r.targetFieldId === fid,
-      );
-      if (visibilityRules.length === 0) return true;
-      return visibilityRules.some((r) => evaluateRule(r, fields, answers) === true);
-    });
-
-    if (!someFieldActive) continue;
-
-    return q;
-  }
-
-  return null;
-}
-
-/**
  * Find fields that are still missing but should have been answered
  * by a question that was already asked (partial compound extractions).
  */
@@ -171,7 +136,7 @@ function buildSystemPrompt(
   answers: Record<string, string>,
   ai: AiInstructions,
 ): string {
-  const nextQuestion = findNextQuestion(questions, fields, rules, answers);
+  const nextQuestion = findNextQuestion(questions, fields, answers);
   const missingFromAsked = findMissingFieldsFromAskedQuestions(questions, fields, answers);
 
   // Build field schema block
@@ -189,9 +154,8 @@ function buildSystemPrompt(
         .join("\n")
     : "  None defined.";
 
-  // Build answered/remaining summary
+  // Build answered summary
   const answeredFields = fields.filter((f) => answers[f.id] !== undefined);
-  const unansweredFields = fields.filter((f) => answers[f.id] === undefined);
 
   // Build rejection rules block
   const rulesBlock =
@@ -352,6 +316,34 @@ export async function POST(req: Request) {
     rec.aiInstructions as Partial<AiInstructions> | undefined,
   );
 
+  if (propertyId) {
+    const db = createServiceClient();
+    const { data: pubRow, error: pubErr } = await db
+      .from("properties")
+      .select("published_at")
+      .eq("id", propertyId)
+      .maybeSingle();
+    if (pubErr) {
+      console.error("[chat] published check", pubErr);
+      return NextResponse.json({ error: "Could not verify listing." }, { status: 500 });
+    }
+    if (!pubRow?.published_at) {
+      return NextResponse.json(
+        { error: "This listing is not published yet." },
+        { status: 403 },
+      );
+    }
+  }
+
+  // Sanity check the stored schema. We don't block the chat on errors (bad
+  // data is already persisted at this point) but log so the landlord-facing
+  // editor bug can be diagnosed. Saves on the editor are gated by the same
+  // validator.
+  const treeError = validateQuestionTree(questions, fields);
+  if (treeError) {
+    console.warn(`[chat] Invalid question tree for property ${propertyId ?? "?"}: ${treeError}`);
+  }
+
   // ── Load session state from DB (server-authoritative) ──
   let clarificationPending = false;
   let offTopicCount = 0;
@@ -438,10 +430,8 @@ export async function POST(req: Request) {
   const violations = evaluateRules(rules, fields, mergedAnswers);
   const firstViolation = violations[0] ?? null;
 
-  // Completion is based on fields, not questions
-  const allFieldsCollected =
-    fields.length > 0 &&
-    fields.every((f) => mergedAnswers[f.id] !== undefined);
+  // Completion: every active question (root + triggered children) must be fully answered
+  const allFieldsCollected = isInterviewComplete(questions, fields, mergedAnswers);
 
   // ── Update counters ──
 

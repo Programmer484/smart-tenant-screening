@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
@@ -9,16 +9,31 @@ import type { PropertyRecord, PropertyLinks, AiInstructions } from "@/lib/proper
 import { DEFAULT_AI_INSTRUCTIONS, DEFAULT_LINKS, DEFAULT_MAX_FIELDS_PER_QUESTION, resolveAiInstructions } from "@/lib/property";
 import type { LandlordField } from "@/lib/landlord-field";
 import {
-  isFieldVisibilityRule,
   normalizeRulesList,
+  OPERATORS_BY_KIND,
+  VALUELESS_OPERATORS,
+  operatorLabel,
+  defaultOperatorForKind,
+  defaultValueForKind,
+  countInvalidRuleConditions,
+  getFirstInvalidRuleConditionId,
   type LandlordRule,
 } from "@/lib/landlord-rule";
-import type { Question } from "@/lib/question";
+import {
+  normalizeQuestionOrder,
+  questionTextEditorRows,
+  getInvalidQuestionSummary,
+  validateQuestionTree,
+  type Question,
+  type QuestionTrigger,
+} from "@/lib/question";
 import RulesSection from "@/app/components/RulesSection";
 import { PropertyEditorSkeleton } from "@/app/components/Skeleton";
 import { ConfirmDialog } from "@/app/components/ConfirmDialog";
 import { RuleProposalModal, type Proposal } from "@/app/components/RuleProposalModal";
 import LandlordFieldsSection from "@/app/components/LandlordFieldsSection";
+import { FieldPickerPopover } from "@/app/components/FieldPickerPopover";
+import { depthStyle } from "@/app/components/depth-styles";
 
 const TABS = ["Fields", "Questions", "Rules", "Links", "AI Behavior"] as const;
 type Tab = (typeof TABS)[number];
@@ -32,178 +47,610 @@ function migrateRules(rawRules: unknown[]): LandlordRule[] {
 }
 
 function ruleReferencesField(r: LandlordRule, fieldId: string): boolean {
-  if (r.targetFieldId === fieldId) return true;
   return r.conditions.some((c) => c.fieldId === fieldId);
 }
 
 function summarizeRule(r: LandlordRule): string {
   const conds = r.conditions.map((c) => `${c.fieldId} ${c.operator} ${c.value}`).join("; ");
-  if (isFieldVisibilityRule(r)) {
-    const tgt = r.targetFieldId ? ` (field: ${r.targetFieldId})` : "";
-    return `Show field${tgt} when: ${conds}`;
-  }
   if (r.kind === "reject") return `Reject: ${conds}`;
   return `Require: ${conds}`;
 }
 
 // ─── Question Editor ────────────────────────────────────────────────
 
-function MaxFieldsInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+/**
+ * Compact gear-button popover for "max fields per question". Lives next to
+ * the question generator instead of floating in the footer, so its purpose
+ * is obvious from context.
+ */
+function MaxFieldsPopover({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
   const [draft, setDraft] = useState(String(value));
 
   useEffect(() => { setDraft(String(value)); }, [value]);
 
-  function commit() {
-    const n = parseInt(draft, 10);
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  function commit(raw: string) {
+    const n = parseInt(raw, 10);
     if (!Number.isFinite(n) || n < 1) { onChange(1); setDraft("1"); }
     else if (n > 10) { onChange(10); setDraft("10"); }
-    else { onChange(n); }
+    else { onChange(n); setDraft(String(n)); }
   }
 
   return (
-    <div className="flex items-center gap-2">
-      <label className="text-[11px] text-foreground/45">Max fields per question</label>
-      <input
-        type="number"
-        min={1}
-        max={10}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
-        className="w-14 rounded-lg border border-foreground/10 bg-[#f7f9f8] px-2 py-1 text-center text-xs text-foreground focus:border-teal-700/40 focus:bg-white focus:outline-none"
-      />
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        title="Question settings"
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-foreground/10 bg-white text-foreground/55 hover:text-foreground/80 hover:border-foreground/20 transition-colors"
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+          <path d="M8 5.5a2.5 2.5 0 100 5 2.5 2.5 0 000-5z" stroke="currentColor" strokeWidth="1.3" />
+          <path d="M13 8a5.07 5.07 0 00-.06-.78l1.4-1.05-1.5-2.6-1.65.5a5 5 0 00-1.36-.79L9.5 1.5h-3l-.33 1.78a5 5 0 00-1.36.79l-1.65-.5-1.5 2.6 1.4 1.05A5.07 5.07 0 003 8c0 .27.02.53.06.78l-1.4 1.05 1.5 2.6 1.65-.5a5 5 0 001.36.79L6.5 14.5h3l.33-1.78a5 5 0 001.36-.79l1.65.5 1.5-2.6-1.4-1.05c.04-.25.06-.51.06-.78z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 z-30 w-64 rounded-lg border border-black/10 bg-white p-3 shadow-lg">
+          <label className="block text-xs font-medium text-foreground/70">Max fields per question</label>
+          <p className="mt-1 text-[11px] text-foreground/45">
+            Caps how many fields the AI will pack into one question. Lower = more, simpler questions.
+          </p>
+          <input
+            type="number"
+            min={1}
+            max={10}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={(e) => commit(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur(); }}
+            className="mt-2 w-20 rounded-md border border-foreground/10 bg-[#f7f9f8] px-2 py-1 text-center text-sm focus:border-teal-700/40 focus:bg-white focus:outline-none"
+          />
+        </div>
+      )}
     </div>
   );
 }
 
-function QuestionEditor({
-  question,
-  fields,
+/** Value input for a branching condition (adapts to field type) */
+function BranchValueInput({
+  field,
+  value,
   onChange,
-  onDelete,
-  onMoveUp,
-  onMoveDown,
-  isFirst,
-  isLast,
-  maxFields,
 }: {
-  question: Question;
-  fields: LandlordField[];
-  onChange: (q: Question) => void;
-  onDelete: () => void;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
-  isFirst: boolean;
-  isLast: boolean;
-  maxFields?: number;
+  field: LandlordField | undefined;
+  value: string;
+  onChange: (v: string) => void;
 }) {
-  const overLimit = maxFields != null && question.fieldIds.length > maxFields;
+  if (!field) return null;
+  if (field.value_kind === "boolean") {
+    return (
+      <select value={value} onChange={(e) => onChange(e.target.value)}
+        className="min-w-[7rem] rounded-lg border border-foreground/10 bg-background px-3 py-1.5 text-xs text-foreground focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/15">
+        <option value="true">Yes</option>
+        <option value="false">No</option>
+      </select>
+    );
+  }
+  if (field.value_kind === "enum") {
+    return (
+      <select value={value} onChange={(e) => onChange(e.target.value)}
+        className="min-w-[7rem] rounded-lg border border-foreground/10 bg-background px-3 py-1.5 text-xs text-foreground focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/15">
+        <option value="">Select...</option>
+        {(field.options ?? []).map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+      </select>
+    );
+  }
   return (
-    <div className={`flex gap-3 rounded-xl border bg-background p-4 shadow-sm ${overLimit ? "border-amber-300" : "border-foreground/10"}`}>
-      {/* Reorder controls */}
-      <div className="flex flex-col items-center gap-0.5 pt-1 text-foreground/30">
-        <button type="button" onClick={onMoveUp} disabled={isFirst} className="rounded p-0.5 transition-colors hover:text-foreground/70 disabled:opacity-20">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 8l4-4 4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
-        </button>
-        <svg width="10" height="14" viewBox="0 0 10 14" fill="none" className="opacity-40">
-          <circle cx="3" cy="3" r="1" fill="currentColor" />
-          <circle cx="7" cy="3" r="1" fill="currentColor" />
-          <circle cx="3" cy="7" r="1" fill="currentColor" />
-          <circle cx="7" cy="7" r="1" fill="currentColor" />
-          <circle cx="3" cy="11" r="1" fill="currentColor" />
-          <circle cx="7" cy="11" r="1" fill="currentColor" />
-        </svg>
-        <button type="button" onClick={onMoveDown} disabled={isLast} className="rounded p-0.5 transition-colors hover:text-foreground/70 disabled:opacity-20">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
-        </button>
-      </div>
+    <input
+      type={field.value_kind === "number" ? "number" : field.value_kind === "date" ? "date" : "text"}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={field.value_kind === "number" ? "0" : "value"}
+      className="min-w-[7rem] max-w-[12rem] rounded-lg border border-foreground/10 bg-transparent px-3 py-1.5 text-xs text-foreground placeholder:text-foreground/35 focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/15"
+    />
+  );
+}
 
-      <div className="flex flex-1 flex-col gap-3">
-        {/* Question text */}
-        <input
-          type="text"
-          value={question.text}
-          onChange={(e) => onChange({ ...question, text: e.target.value })}
-          placeholder="Question text (e.g. How many people will live here?)"
-          className="w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none"
+/** Match property description / question cards: grow height with content (scrollHeight).
+ *  Pass `layoutKey` when the field can mount/unmount (e.g. hint panel) so height recalculates. */
+function useTextareaAutosize(value: string, layoutKey?: unknown) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value, layoutKey]);
+  return ref;
+}
+
+// ─── Tree type for recursive question nesting ──────────────────────
+
+type QuestionTreeNode = {
+  index: number;
+  children: QuestionTreeNode[];
+};
+
+/** Build a tree from the flat sorted questions list using `parentQuestionId`.
+ *  Children inherit their parent's position by appearing immediately after
+ *  their parent's subtree in the rendering order. Sibling order matches
+ *  the flat array's order. */
+function buildQuestionTree(questions: Question[]): QuestionTreeNode[] {
+  const indexById = new Map<string, number>();
+  questions.forEach((q, i) => indexById.set(q.id, i));
+
+  const nodes: QuestionTreeNode[] = questions.map((_, i) => ({ index: i, children: [] }));
+  const roots: QuestionTreeNode[] = [];
+
+  for (let i = 0; i < questions.length; i++) {
+    const parentId = questions[i].parentQuestionId;
+    if (parentId) {
+      const parentIdx = indexById.get(parentId);
+      if (parentIdx !== undefined && parentIdx !== i) {
+        nodes[parentIdx].children.push(nodes[i]);
+        continue;
+      }
+    }
+    roots.push(nodes[i]);
+  }
+  return roots;
+}
+
+function subtreeSize(node: QuestionTreeNode): number {
+  return 1 + node.children.reduce((sum, c) => sum + subtreeSize(c), 0);
+}
+
+/** Collect all flat-array indices in a subtree (self + descendants). */
+function collectSubtreeIndices(node: QuestionTreeNode): number[] {
+  const out: number[] = [node.index];
+  for (const c of node.children) out.push(...collectSubtreeIndices(c));
+  return out;
+}
+
+/** Find a tree node by its flat-array index. Returns null if not found. */
+function findNode(roots: QuestionTreeNode[], index: number): QuestionTreeNode | null {
+  for (const r of roots) {
+    if (r.index === index) return r;
+    const inChild = findNode(r.children, index);
+    if (inChild) return inChild;
+  }
+  return null;
+}
+
+function subtreeContainsInvalid(
+  n: QuestionTreeNode,
+  questions: Question[],
+  invalidQuestionIds: Set<string>,
+): boolean {
+  if (invalidQuestionIds.has(questions[n.index]?.id ?? "")) return true;
+  for (const c of n.children) {
+    if (subtreeContainsInvalid(c, questions, invalidQuestionIds)) return true;
+  }
+  return false;
+}
+
+// ─── Depth uses indentation + a thin guide line, not hue. The single accent
+//     color (teal) means "interactive primary" everywhere on this screen. ────
+const DEPTH_INDENT_PX = 20;
+
+// ─── Helpers used by the new card layout ────────────────────────────
+
+/** All fieldIds claimed by questions OTHER than the one at `selfIndex`.
+ *  The field picker uses this to lock duplicates so each field can only be
+ *  collected by a single question. */
+function collectFieldIdsUsedByOthers(
+  questions: Question[],
+  selfIndex: number,
+): Set<string> {
+  const out = new Set<string>();
+  questions.forEach((q, i) => {
+    if (i === selfIndex) return;
+    for (const fid of q.fieldIds) out.add(fid);
+  });
+  return out;
+}
+
+// ─── Recursive question node ────────────────────────────────────────
+
+function QuestionNode({
+  node,
+  questions,
+  fields,
+  depth,
+  pathLabel,
+  maxFields,
+  invalidQuestionIds,
+  firstInvalidQuestionId,
+  questionJumpNonce,
+  updateQuestion,
+  updateTrigger,
+  requestDeleteQuestion,
+  onMoveRootUp,
+  onMoveRootDown,
+  addFollowUp,
+}: {
+  node: QuestionTreeNode;
+  questions: Question[];
+  fields: LandlordField[];
+  depth: number;
+  /** Hierarchical label like "Q1", "Q1.2", "Q1.2.1" — purely informational. */
+  pathLabel: string;
+  maxFields?: number;
+  invalidQuestionIds: Set<string>;
+  firstInvalidQuestionId: string | null;
+  /** Incremented when user taps "Jump to first error" so ancestors can expand. */
+  questionJumpNonce: number;
+  updateQuestion: (index: number, updated: Question) => void;
+  updateTrigger: (index: number, patch: Partial<QuestionTrigger>) => void;
+  /** Hands off to the page so we can show an inline confirm + undo toast. */
+  requestDeleteQuestion: (index: number, descendantCount: number) => void;
+  onMoveRootUp?: () => void;
+  onMoveRootDown?: () => void;
+  addFollowUp: (parentIndex: number) => void;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  const lastQuestionJumpHandledRef = useRef(0);
+  useEffect(() => {
+    if (questionJumpNonce === 0) return;
+    if (questionJumpNonce === lastQuestionJumpHandledRef.current) return;
+    lastQuestionJumpHandledRef.current = questionJumpNonce;
+    if (!subtreeContainsInvalid(node, questions, invalidQuestionIds)) return;
+    setCollapsed(false);
+  }, [questionJumpNonce, node, questions, invalidQuestionIds]);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerAnchor, setPickerAnchor] = useState<DOMRect | null>(null);
+  const [hintOpen, setHintOpen] = useState(false);
+  const editFieldsBtnRef = useRef<HTMLButtonElement>(null);
+  const dragHandleRef = useRef<HTMLButtonElement>(null);
+
+  const q = questions[node.index];
+  const trigger = q.trigger;
+  const isChild = depth > 0 && !!trigger;
+  const isInvalid = invalidQuestionIds.has(q.id);
+
+  const parentQ = q.parentQuestionId
+    ? questions.find((x) => x.id === q.parentQuestionId)
+    : null;
+  const parentFields = parentQ ? fields.filter((f) => parentQ.fieldIds.includes(f.id)) : [];
+  const lockedFieldIds = collectFieldIdsUsedByOthers(questions, node.index);
+
+  const triggerField = trigger ? fields.find((f) => f.id === trigger.fieldId) : undefined;
+  const operators = triggerField ? (OPERATORS_BY_KIND[triggerField.value_kind] ?? ["=="]) : ["=="];
+  const overLimit = maxFields != null && q.fieldIds.length > maxFields;
+  const linkedFieldObjs = q.fieldIds
+    .map((fid) => fields.find((f) => f.id === fid))
+    .filter((f): f is LandlordField => !!f);
+  const isUntitled = !q.text.trim();
+
+  const valuelessOp = trigger ? VALUELESS_OPERATORS.has(trigger.operator) : false;
+  const conditionIncomplete = !!trigger && !valuelessOp && !trigger.value.trim();
+
+  const subtreeChildCount = (function count(n: QuestionTreeNode): number {
+    return n.children.reduce((s, c) => s + 1 + count(c), 0);
+  })(node);
+
+  function handleTriggerFieldChange(fieldId: string) {
+    if (!trigger) return;
+    const f = parentFields.find((x) => x.id === fieldId);
+    if (!f) return;
+    updateTrigger(node.index, {
+      fieldId,
+      operator: defaultOperatorForKind(f.value_kind),
+      value: defaultValueForKind(f.value_kind),
+    });
+  }
+
+  function openPicker() {
+    if (editFieldsBtnRef.current) {
+      setPickerAnchor(editFieldsBtnRef.current.getBoundingClientRect());
+      setPickerOpen(true);
+    }
+  }
+
+  function onDragHandleKey(e: React.KeyboardEvent<HTMLButtonElement>) {
+    if (e.key === "ArrowUp" && onMoveRootUp) {
+      e.preventDefault();
+      onMoveRootUp();
+      requestAnimationFrame(() => dragHandleRef.current?.focus());
+    } else if (e.key === "ArrowDown" && onMoveRootDown) {
+      e.preventDefault();
+      onMoveRootDown();
+      requestAnimationFrame(() => dragHandleRef.current?.focus());
+    }
+  }
+
+  const styles = depthStyle(depth);
+  const pathLabelEl = (
+    <span
+      className={`shrink-0 font-mono text-[10px] font-semibold ${styles.label}`}
+      title={`Question ${pathLabel.slice(1)}`}
+    >
+      {pathLabel}
+    </span>
+  );
+
+  const conditionPill = isChild && trigger ? (
+    <div
+      className={`flex flex-wrap items-center gap-1 rounded-md border bg-white/70 px-1.5 py-1 ${
+        conditionIncomplete ? "border-l-2 border-l-amber-400 border-y-foreground/10 border-r-foreground/10" : "border-foreground/10"
+      }`}
+      title={conditionIncomplete ? "Branch incomplete — set a value" : undefined}
+    >
+      <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-foreground/40">When</span>
+      <select
+        value={trigger.fieldId}
+        onChange={(e) => handleTriggerFieldChange(e.target.value)}
+        className="rounded-md border border-foreground/15 bg-white px-1.5 py-0.5 text-xs text-foreground focus:border-teal-700/40 focus:outline-none"
+      >
+        {parentFields.map((f) => (
+          <option key={f.id} value={f.id}>{f.label || f.id}</option>
+        ))}
+      </select>
+      <select
+        value={trigger.operator}
+        onChange={(e) => updateTrigger(node.index, { operator: e.target.value })}
+        className="rounded-md border border-foreground/15 bg-white px-1.5 py-0.5 text-xs text-foreground focus:border-teal-700/40 focus:outline-none"
+      >
+        {operators.map((op) => (
+          <option key={op} value={op}>{operatorLabel(op, triggerField?.value_kind)}</option>
+        ))}
+      </select>
+      {!valuelessOp && (
+        <BranchValueInput
+          field={triggerField}
+          value={trigger.value}
+          onChange={(v) => updateTrigger(node.index, { value: v })}
         />
+      )}
+      {conditionIncomplete && (
+        <span className="text-[10px] italic text-amber-600">any value</span>
+      )}
+    </div>
+  ) : null;
 
-        {/* Linked fields */}
-        <details className="group" open={question.fieldIds.length === 0}>
-          <summary className="cursor-pointer select-none text-[11px] text-foreground/45 hover:text-foreground/60 transition-colors flex items-center gap-1">
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="transition-transform group-open:rotate-90">
-              <path d="M3 1.5l4 3.5-4 3.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+  const collapseToggle = node.children.length > 0 ? (
+    <button
+      type="button"
+      onClick={() => setCollapsed((c) => !c)}
+      aria-expanded={!collapsed}
+      title={collapsed ? `Show ${node.children.length} follow-up${node.children.length === 1 ? "" : "s"}` : "Hide follow-ups"}
+      className="shrink-0 flex items-center justify-center rounded p-0.5 text-foreground/40 hover:bg-black/5 hover:text-foreground/70 transition-colors"
+    >
+      <svg
+        width="10"
+        height="10"
+        viewBox="0 0 10 10"
+        fill="none"
+        className={`transition-transform ${collapsed ? "" : "rotate-90"}`}
+      >
+        <path d="M3 1.5l4 3.5-4 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </button>
+  ) : null;
+
+  const dragHandle = onMoveRootUp || onMoveRootDown ? (
+    <button
+      ref={dragHandleRef}
+      type="button"
+      onKeyDown={onDragHandleKey}
+      title="Drag or use ↑/↓ to reorder"
+      aria-label="Reorder question (use up/down arrow keys)"
+      className="shrink-0 flex h-full items-center px-1.5 text-foreground/0 group-hover:text-foreground/30 focus-visible:text-foreground/40 focus:outline-none cursor-grab active:cursor-grabbing transition-colors"
+    >
+      <svg width="10" height="14" viewBox="0 0 10 14" fill="none" aria-hidden>
+        <circle cx="3" cy="3" r="1" fill="currentColor" />
+        <circle cx="7" cy="3" r="1" fill="currentColor" />
+        <circle cx="3" cy="7" r="1" fill="currentColor" />
+        <circle cx="7" cy="7" r="1" fill="currentColor" />
+        <circle cx="3" cy="11" r="1" fill="currentColor" />
+        <circle cx="7" cy="11" r="1" fill="currentColor" />
+      </svg>
+    </button>
+  ) : null;
+
+  const metaChips = (
+    <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+      {q.fieldIds.length > 0 && (
+        <span className="rounded-full bg-foreground/5 px-1.5 py-0.5 text-[10px] font-medium text-foreground/55">
+          {q.fieldIds.length} field{q.fieldIds.length === 1 ? "" : "s"}
+        </span>
+      )}
+      {node.children.length > 0 && (
+        <span className="rounded-full bg-foreground/5 px-1.5 py-0.5 text-[10px] font-medium text-foreground/55">
+          {node.children.length} follow-up{node.children.length === 1 ? "" : "s"}
+        </span>
+      )}
+    </div>
+  );
+
+  const hintEditing = hintOpen || !!q.extract_hint;
+  const extractHintRef = useTextareaAutosize(q.extract_hint || "", hintEditing);
+  const cardBody = (
+    <div className="flex flex-1 flex-col gap-2 min-w-0">
+      <div className="flex items-start gap-2">
+        <div className="flex shrink-0 items-start gap-2 pt-1.5">
+          {pathLabelEl}
+          {collapseToggle}
+        </div>
+        <textarea
+          value={q.text}
+          onChange={(e) => updateQuestion(node.index, { ...q, text: e.target.value })}
+          rows={questionTextEditorRows(q.text)}
+          placeholder={isChild ? "Untitled follow-up — click to add question text" : "Question text (e.g. How many people will live here?)"}
+          className={`min-w-0 flex-1 resize-none rounded-md border bg-white px-2.5 py-1.5 text-sm leading-snug text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:outline-none whitespace-pre-wrap ${
+            isUntitled ? "border-dashed border-foreground/20" : "border-foreground/10"
+          }`}
+        />
+        <div className="flex shrink-0 flex-col items-end gap-1 pt-0.5">
+          {metaChips}
+          <button
+            type="button"
+            onClick={() => requestDeleteQuestion(node.index, subtreeChildCount)}
+            aria-label={`Delete ${pathLabel}${subtreeChildCount > 0 ? ` and ${subtreeChildCount} follow-up${subtreeChildCount === 1 ? "" : "s"}` : ""}`}
+            title="Delete question"
+            className="rounded p-1 text-foreground/25 hover:bg-red-50 hover:text-red-500 transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+              <path d="M2 4h12M5 4V2.5A1.5 1.5 0 0 1 6.5 1h3A1.5 1.5 0 0 1 11 2.5V4m2 0-.75 9A1.5 1.5 0 0 1 10.75 14.5h-5.5A1.5 1.5 0 0 1 3.75 13L3 4" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-            Linked fields
-            {question.fieldIds.length > 0 && (
-              <span className="ml-1 rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold text-teal-700">
-                {question.fieldIds.length} selected
-              </span>
-            )}
-          </summary>
-          <div className="mt-2 flex flex-wrap gap-1.5 pl-1.5">
-            {fields.map((f) => {
-              const isLinked = question.fieldIds.includes(f.id);
-              return (
-                <button
-                  key={f.id}
-                  type="button"
-                  onClick={() => {
-                    const next = isLinked
-                      ? question.fieldIds.filter((fid) => fid !== f.id)
-                      : [...question.fieldIds, f.id];
-                    onChange({ ...question, fieldIds: next });
-                  }}
-                  className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors border ${
-                    isLinked
-                      ? "border-teal-700/30 bg-teal-50 text-teal-700"
-                      : "border-foreground/10 text-foreground/40 hover:border-foreground/20 hover:text-foreground/60"
-                  }`}
-                >
-                  {f.label || f.id}
-                </button>
-              );
-            })}
-            {fields.length === 0 && (
-              <span className="text-xs text-foreground/35 italic">Add fields first</span>
-            )}
-          </div>
-        </details>
-
-        {overLimit && (
-          <p className="text-[11px] text-amber-600">
-            This question links {question.fieldIds.length} fields (limit is {maxFields}). Consider splitting it.
-          </p>
-        )}
-
-        {/* Extract hint (collapsible) */}
-        <details className="group">
-          <summary className="cursor-pointer text-[11px] text-foreground/35 hover:text-foreground/50 transition-colors">
-            <span className="ml-1">Extraction hint (optional)</span>
-          </summary>
-          <input
-            type="text"
-            value={question.extract_hint || ""}
-            onChange={(e) => onChange({ ...question, extract_hint: e.target.value || undefined })}
-            placeholder="e.g. If they say 'a couple', extract num_adults=2"
-            className="mt-1.5 w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-xs text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none"
-          />
-        </details>
+          </button>
+        </div>
       </div>
 
-      {/* Delete */}
+      {conditionPill}
+
+      <div className="flex flex-wrap items-center gap-1">
+        {linkedFieldObjs.map((f) => (
+          <span
+            key={f.id}
+            className="inline-flex items-center gap-1 rounded-full border border-teal-700/20 bg-teal-50 px-2 py-0.5 text-[11px] text-teal-800"
+            title={f.id}
+          >
+            {f.label || f.id}
+          </span>
+        ))}
+        <button
+          ref={editFieldsBtnRef}
+          type="button"
+          onClick={openPicker}
+          className="inline-flex items-center gap-1 rounded-full border border-dashed border-foreground/20 px-2 py-0.5 text-[11px] text-foreground/55 hover:border-teal-700/40 hover:text-teal-700 transition-colors"
+        >
+          <svg width="9" height="9" viewBox="0 0 12 12" fill="none">
+            <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+          {linkedFieldObjs.length === 0 ? "Add fields" : "Edit"}
+        </button>
+        {overLimit && (
+          <span className="ml-1 text-[11px] text-amber-600">
+            over {maxFields} field limit
+          </span>
+        )}
+      </div>
+
+      {hintEditing && (
+        <textarea
+          ref={extractHintRef}
+          autoFocus={hintOpen && !q.extract_hint}
+          value={q.extract_hint || ""}
+          onChange={(e) => updateQuestion(node.index, { ...q, extract_hint: e.target.value || undefined })}
+          onBlur={() => setHintOpen(false)}
+          rows={1}
+          placeholder="e.g. 'a couple' → num_adults=2"
+          className="w-full resize-none overflow-hidden rounded-md border border-foreground/10 bg-white px-2 py-1 text-[11px] italic leading-snug text-foreground/70 placeholder:not-italic placeholder:text-foreground/30 focus:border-teal-700/40 focus:outline-none whitespace-pre-wrap"
+        />
+      )}
+
+      {(!hintEditing || q.fieldIds.length > 0) && (
+        <div className="flex items-center gap-3 text-[11px]">
+          {!hintEditing && (
+            <button
+              type="button"
+              onClick={() => setHintOpen(true)}
+              className="text-foreground/40 hover:text-foreground/65 transition-colors"
+            >
+              + Add hint
+            </button>
+          )}
+          {q.fieldIds.length > 0 && (
+            <button
+              type="button"
+              onClick={() => addFollowUp(node.index)}
+              className="flex items-center gap-1 text-teal-700/70 hover:text-teal-700 transition-colors"
+            >
+              <svg width="9" height="9" viewBox="0 0 12 12" fill="none">
+                <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+              Add follow-up
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
+  const childrenSection = node.children.length > 0 ? (
+    collapsed ? (
       <button
         type="button"
-        onClick={onDelete}
-        aria-label="Delete question"
-        className="mt-1 shrink-0 rounded-lg p-1.5 text-red-400/70 hover:bg-red-50 hover:text-red-500 transition-colors"
+        onClick={() => setCollapsed(false)}
+        className="ml-5 mt-1 self-start text-[11px] italic text-foreground/40 hover:text-foreground/70 transition-colors"
       >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <path d="M2 4h12M5 4V2.5A1.5 1.5 0 0 1 6.5 1h3A1.5 1.5 0 0 1 11 2.5V4m2 0-.75 9A1.5 1.5 0 0 1 10.75 14.5h-5.5A1.5 1.5 0 0 1 3.75 13L3 4" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
-          <path d="M6.5 7v4M9.5 7v4" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
-        </svg>
+        {node.children.length} follow-up{node.children.length === 1 ? "" : "s"} hidden — click to show
       </button>
+    ) : (
+      <div
+        className="relative mt-1.5 flex flex-col gap-1.5"
+        style={{ paddingLeft: DEPTH_INDENT_PX }}
+      >
+        <div
+          className={`absolute top-0 bottom-2 border-l-2 ${depthStyle(depth + 1).guide}`}
+          style={{ left: 6 }}
+          aria-hidden
+        />
+        {node.children.map((child, ci) => (
+          <QuestionNode
+            key={questions[child.index].id}
+            node={child}
+            questions={questions}
+            fields={fields}
+            depth={depth + 1}
+            pathLabel={`${pathLabel}.${ci + 1}`}
+            maxFields={maxFields}
+            invalidQuestionIds={invalidQuestionIds}
+            firstInvalidQuestionId={firstInvalidQuestionId}
+            questionJumpNonce={questionJumpNonce}
+            updateQuestion={updateQuestion}
+            updateTrigger={updateTrigger}
+            requestDeleteQuestion={requestDeleteQuestion}
+            addFollowUp={addFollowUp}
+          />
+        ))}
+      </div>
+    )
+  ) : null;
+
+  const cardChrome = `group flex items-stretch gap-1 rounded-lg border bg-white shadow-sm transition-colors ${
+    isInvalid
+      ? "border-red-300 ring-1 ring-red-100/90"
+      : isUntitled
+        ? "border-dashed border-foreground/15"
+        : overLimit
+          ? "border-amber-300"
+          : "border-foreground/10"
+  }`;
+
+  return (
+    <div
+      id={firstInvalidQuestionId === q.id ? `${q.id}-question-error` : undefined}
+    >
+      <div className={cardChrome}>
+        {dragHandle}
+        <div className={`flex-1 min-w-0 py-3 pr-3 ${dragHandle ? "" : "pl-3"}`}>
+          {cardBody}
+        </div>
+      </div>
+
+      <FieldPickerPopover
+        open={pickerOpen}
+        anchorRect={pickerAnchor}
+        fields={fields}
+        selectedIds={q.fieldIds}
+        lockedFieldIds={lockedFieldIds}
+        onChange={(next) => updateQuestion(node.index, { ...q, fieldIds: next })}
+        onClose={() => setPickerOpen(false)}
+      />
+
+      {childrenSection}
     </div>
   );
 }
@@ -233,15 +680,25 @@ export default function PropertySetupPage() {
   const [showSaved, setShowSaved] = useState(false);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedIndicatorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const saveRef = useRef<(_?: Partial<PropertyRecord>) => Promise<void>>(async () => {});
+  const saveRef = useRef<(_?: Partial<PropertyRecord>) => Promise<boolean>>(async () => false);
   const serializedStateRef = useRef("");
   const hasLoadedRef = useRef(false);
   const [questionsPrompt, setQuestionsPrompt] = useState("");
   const [rulesPrompt, setRulesPrompt] = useState("");
   const [ruleProposal, setRuleProposal] = useState<Proposal | null>(null);
   const [fieldDeleteIndex, setFieldDeleteIndex] = useState<number | null>(null);
+  const [questionJumpNonce, setQuestionJumpNonce] = useState(0);
+  const [publishedAt, setPublishedAt] = useState<string | null>(null);
 
   const descRef = useRef<HTMLTextAreaElement>(null);
+
+  const questionInvalid = useMemo(
+    () => getInvalidQuestionSummary(questions, fields),
+    [questions, fields],
+  );
+
+  const questionsPromptRef = useTextareaAutosize(questionsPrompt);
+  const rulesPromptRef = useTextareaAutosize(rulesPrompt);
 
   useEffect(() => {
     const el = descRef.current;
@@ -270,11 +727,12 @@ export default function PropertySetupPage() {
       setDescription(p.description);
       setFields((p.fields as LandlordField[]) ?? []);
       setQuestions((p.questions as Question[]) ?? []);
-      const migratedRules = migrateRules((p.rules as any[]) ?? []);
+      const migratedRules = migrateRules((p.rules as unknown[]) ?? []);
       setRules(migratedRules);
       setLinks({ ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) });
       setAiInstructions(resolveAiInstructions(p.ai_instructions));
       setMaxFieldsPerQuestion(typeof p.max_fields_per_question === "number" ? p.max_fields_per_question : DEFAULT_MAX_FIELDS_PER_QUESTION);
+      setPublishedAt(p.published_at ?? null);
 
       lastSavedRef.current = JSON.stringify({
         title: p.title, description: p.description,
@@ -283,6 +741,7 @@ export default function PropertySetupPage() {
         rules: migratedRules, links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) },
         aiInstructions: resolveAiInstructions(p.ai_instructions),
         maxFieldsPerQuestion: typeof p.max_fields_per_question === "number" ? p.max_fields_per_question : DEFAULT_MAX_FIELDS_PER_QUESTION,
+        publishedAt: p.published_at ?? null,
       });
       hasLoadedRef.current = true;
       setPageLoading(false);
@@ -293,9 +752,9 @@ export default function PropertySetupPage() {
   // ── Dirty tracking ──
   useEffect(() => {
     if (pageLoading) return;
-    const current = JSON.stringify({ title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion });
+    const current = JSON.stringify({ title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion, publishedAt });
     setDirty(current !== lastSavedRef.current);
-  }, [title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion, pageLoading, lastSavedRef]);
+  }, [title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion, publishedAt, pageLoading, lastSavedRef]);
 
   useEffect(() => {
     function onBeforeUnload(e: BeforeUnloadEvent) {
@@ -307,37 +766,77 @@ export default function PropertySetupPage() {
 
   // ── Save ──
   const save = useCallback(
-    async (overrides?: Partial<PropertyRecord>) => {
+    async (overrides?: Partial<PropertyRecord>): Promise<boolean> => {
+      // Drop fully-empty draft fields (both id and label blank) — they can't be
+      // referenced by anything and would confuse downstream validators.
+      const cleanFields = fields.filter(
+        (f) => f.id.trim() !== "" || f.label.trim() !== "",
+      );
+      // Normalize question order so persisted `sort_order` always matches the
+      // visual tree (findNextQuestion / imports / manual edits stay in sync).
+      const cleanQuestions = normalizeQuestionOrder(questions);
+
+      const treeError = validateQuestionTree(cleanQuestions, cleanFields);
+      void treeError;
+
+      const qSummary = getInvalidQuestionSummary(cleanQuestions, cleanFields);
+      const invRules = countInvalidRuleConditions(rules, cleanFields);
+      const ready = qSummary.count === 0 && invRules === 0;
+
+      const pubFromOverride = overrides?.published_at;
+      const restOverrides = { ...overrides };
+      delete restOverrides.published_at;
+
+      let nextPublishedAt: string | null;
+      if (!ready) {
+        nextPublishedAt = null;
+      } else if (pubFromOverride !== undefined) {
+        nextPublishedAt = pubFromOverride;
+      } else {
+        nextPublishedAt = publishedAt;
+      }
+
       setSaving(true);
       const { error } = await supabase
         .from("properties")
         .update({
           title: title.trim() || "New Property",
           description: description.trim(),
-          fields,
-          questions,
+          fields: cleanFields,
+          questions: cleanQuestions,
           rules,
           links,
           ai_instructions: aiInstructions,
           max_fields_per_question: maxFieldsPerQuestion,
+          published_at: nextPublishedAt,
           updated_at: new Date().toISOString(),
-          ...overrides,
+          ...restOverrides,
         })
         .eq("id", id);
       setSaving(false);
-      if (error) { console.error("[save]", error); toast.error("Failed to save"); }
-      else {
-        lastSavedRef.current = JSON.stringify({ title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion });
-        setDirty(false);
-        if (savedIndicatorTimerRef.current) clearTimeout(savedIndicatorTimerRef.current);
-        setShowSaved(true);
-        savedIndicatorTimerRef.current = setTimeout(() => {
-          setShowSaved(false);
-          savedIndicatorTimerRef.current = null;
-        }, 2000);
-      }
+      if (error) { console.error("[save]", error); toast.error("Failed to save"); return false; }
+      setPublishedAt(nextPublishedAt);
+      lastSavedRef.current = JSON.stringify({
+        title,
+        description,
+        fields: cleanFields,
+        questions: cleanQuestions,
+        rules,
+        links,
+        aiInstructions,
+        maxFieldsPerQuestion,
+        publishedAt: nextPublishedAt,
+      });
+      setDirty(false);
+      if (savedIndicatorTimerRef.current) clearTimeout(savedIndicatorTimerRef.current);
+      setShowSaved(true);
+      savedIndicatorTimerRef.current = setTimeout(() => {
+        setShowSaved(false);
+        savedIndicatorTimerRef.current = null;
+      }, 2000);
+      return true;
     },
-    [id, title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion, supabase], // eslint-disable-line react-hooks/exhaustive-deps
+    [id, title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion, publishedAt, supabase], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   saveRef.current = save;
@@ -354,10 +853,12 @@ export default function PropertySetupPage() {
     if (!hasLoadedRef.current) return;
     if (serializedStateRef.current === lastSavedRef.current) return;
     await save();
+    // Only `save` is a reactive value; the rest are refs (stable).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [save]);
 
   serializedStateRef.current = JSON.stringify({
-    title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion,
+    title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion, publishedAt,
   });
 
   // Debounced autosave (2s after last edit while dirty)
@@ -383,6 +884,7 @@ export default function PropertySetupPage() {
     links,
     aiInstructions,
     maxFieldsPerQuestion,
+    publishedAt,
     pageLoading,
     loadingPhase,
     dirty,
@@ -391,7 +893,6 @@ export default function PropertySetupPage() {
   ]);
 
   // Flush pending changes on unmount (e.g. client navigation away)
-  // Uses a direct supabase call instead of save() to avoid state updates on an unmounted component.
   useEffect(() => {
     return () => {
       if (savedIndicatorTimerRef.current) {
@@ -401,18 +902,37 @@ export default function PropertySetupPage() {
       if (!hasLoadedRef.current) return;
       if (serializedStateRef.current === lastSavedRef.current) return;
       try {
-        const state = JSON.parse(serializedStateRef.current);
+        const state = JSON.parse(serializedStateRef.current) as {
+          fields: LandlordField[];
+          questions: Question[];
+          title?: string;
+          description?: string;
+          rules: unknown;
+          links: unknown;
+          aiInstructions: unknown;
+          maxFieldsPerQuestion: number;
+          publishedAt?: string | null;
+        };
+        const cleanFields = (state.fields as LandlordField[]).filter(
+          (f) => f.id.trim() !== "" || f.label.trim() !== "",
+        );
+        const cleanQuestions = normalizeQuestionOrder(state.questions as Question[]);
+        const qSum = getInvalidQuestionSummary(cleanQuestions, cleanFields);
+        const invR = countInvalidRuleConditions(state.rules as LandlordRule[], cleanFields);
+        const readyUnmount = qSum.count === 0 && invR === 0;
+        const nextPub = readyUnmount ? (state.publishedAt ?? null) : null;
         void supabase
           .from("properties")
           .update({
             title: (state.title ?? "").trim() || "New Property",
             description: (state.description ?? "").trim(),
-            fields: state.fields,
-            questions: state.questions,
+            fields: cleanFields,
+            questions: cleanQuestions,
             rules: state.rules,
             links: state.links,
             ai_instructions: state.aiInstructions,
             max_fields_per_question: state.maxFieldsPerQuestion,
+            published_at: nextPub,
             updated_at: new Date().toISOString(),
           })
           .eq("id", id)
@@ -429,18 +949,19 @@ export default function PropertySetupPage() {
     }
     try {
       setLoadingPhase("questions");
-      const existingVisRules = rules.filter(isFieldVisibilityRule).map((r) => ({
-        targetFieldId: r.targetFieldId!,
-        conditions: r.conditions.map((c) => ({ fieldId: c.fieldId, operator: c.operator, value: c.value })),
-      }));
       const res = await fetch("/api/generate-fields", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           description: prompt,
           existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
-          existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
-          existingVisibilityRules: existingVisRules,
+          existingQuestions: questions.map((q) => ({
+            id: q.id,
+            text: q.text,
+            fieldIds: q.fieldIds,
+            parentQuestionId: q.parentQuestionId,
+            trigger: q.trigger,
+          })),
           maxFieldsPerQuestion,
         }),
       });
@@ -465,9 +986,8 @@ export default function PropertySetupPage() {
       const proposedFields: LandlordField[] = data.newFields ?? [];
       const proposedQuestions: Question[] = data.questions ?? [];
       const deletedQuestionIds: string[] = data.deletedQuestionIds ?? [];
-      const visibilityRules: LandlordRule[] = data.visibilityRules ?? [];
 
-      if (proposedFields.length === 0 && proposedQuestions.length === 0 && deletedQuestionIds.length === 0 && visibilityRules.length === 0) {
+      if (proposedFields.length === 0 && proposedQuestions.length === 0 && deletedQuestionIds.length === 0) {
         toast.info("No new items to add — AI found everything is covered.");
         return;
       }
@@ -479,7 +999,6 @@ export default function PropertySetupPage() {
         newFields: proposedFields,
         proposedQuestions,
         deletedQuestionIds,
-        visibilityRules,
       });
     } catch (err) {
       console.error("[generateQuestions]", err);
@@ -525,18 +1044,19 @@ export default function PropertySetupPage() {
       if (newFields.length > 0) {
         toast.info("Analyzing missing fields...");
         const newFieldsDesc = newFields.map(f => `${f.label || f.id} (type: ${f.value_kind})`).join(", ");
-        const existingVisRules = rules.filter(isFieldVisibilityRule).map((r) => ({
-          targetFieldId: r.targetFieldId!,
-          conditions: r.conditions.map((c) => ({ fieldId: c.fieldId, operator: c.operator, value: c.value })),
-        }));
         const res2 = await fetch("/api/generate-fields", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
              description: `We are building new screening rules that require these NEW fields (not in the schema yet): ${newFieldsDesc}. We need interview questions to collect them.\n\nIMPORTANT: Look at EXISTING QUESTIONS in the system context. If any existing question is on the same topic as these fields (e.g. house rules, smoking, pets, drugs, income — or one combined "policies" style question), UPDATE that question: keep its id, add the new field id(s) to fieldIds, and rewrite the question text so it naturally asks for everything in one place. Only add a brand-new question if no existing question is a good fit. Prefer merging related checks into one question when it stays readable.`,
              existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
-             existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
-             existingVisibilityRules: existingVisRules,
+             existingQuestions: questions.map((q) => ({
+               id: q.id,
+               text: q.text,
+               fieldIds: q.fieldIds,
+               parentQuestionId: q.parentQuestionId,
+               trigger: q.trigger,
+             })),
              maxFieldsPerQuestion,
           })
         });
@@ -559,7 +1079,6 @@ export default function PropertySetupPage() {
            newFields,
            proposedQuestions: data2.ok !== false ? (data2.questions || []) : [],
            deletedQuestionIds: data2.ok !== false ? (data2.deletedQuestionIds || []) : [],
-           visibilityRules: data2.ok !== false ? (data2.visibilityRules || []) : [],
         });
         return;
       }
@@ -571,7 +1090,6 @@ export default function PropertySetupPage() {
         newFields: [],
         proposedQuestions: [],
         deletedQuestionIds: [],
-        visibilityRules: [],
       });
 
     } catch (err) {
@@ -582,31 +1100,33 @@ export default function PropertySetupPage() {
     }
   }
 
-  function applyProposal() {
-    if (!ruleProposal) return;
-
-    // 1. Add new fields
-    if (ruleProposal.newFields.length > 0) {
-      setFields((prev) => [...prev, ...ruleProposal.newFields.map(f => ({ ...f, _isNew: true, _clientId: generateId() }) as unknown as LandlordField)]);
+  /** Applies the (possibly user-edited) proposal returned by the modal. */
+  function applyProposal(edited: Proposal) {
+    if (edited.newFields.length > 0) {
+      setFields((prev) => [...prev, ...edited.newFields.map(f => ({ ...f, _isNew: true, _clientId: generateId() }) as unknown as LandlordField)]);
     }
 
-    // 2. Delete questions -> replace/append questions -> renumber
-    if (ruleProposal.proposedQuestions.length > 0 || ruleProposal.deletedQuestionIds.length > 0) {
+    if (edited.proposedQuestions.length > 0 || edited.deletedQuestionIds.length > 0) {
       setQuestions((prev) => {
         let next = [...prev];
 
-        // Delete
-        if (ruleProposal.deletedQuestionIds.length > 0) {
-          const deleteSet = new Set(ruleProposal.deletedQuestionIds);
+        if (edited.deletedQuestionIds.length > 0) {
+          const deleteSet = new Set(edited.deletedQuestionIds);
           next = next.filter((q) => !deleteSet.has(q.id));
         }
 
-        // Upsert: replace text + fieldIds for existing, collect truly new
         const newQs: Question[] = [];
-        for (const pq of ruleProposal.proposedQuestions) {
+        for (const pq of edited.proposedQuestions) {
           const idx = next.findIndex((q) => q.id === pq.id);
           if (idx >= 0) {
-            next[idx] = { ...next[idx], text: pq.text, fieldIds: pq.fieldIds, extract_hint: pq.extract_hint };
+            next[idx] = {
+              ...next[idx],
+              text: pq.text,
+              fieldIds: pq.fieldIds,
+              extract_hint: pq.extract_hint,
+              parentQuestionId: pq.parentQuestionId,
+              trigger: pq.trigger,
+            };
           } else {
             newQs.push(pq);
           }
@@ -616,48 +1136,32 @@ export default function PropertySetupPage() {
           next = [...next, ...newQs];
         }
 
-        // Renumber sort_order
-        return next.map((q, i) => ({ ...q, sort_order: i }));
+        return normalizeQuestionOrder(next);
       });
     }
 
-    // 3. Delete / modify / add rules + visibility rules (dedup by targetFieldId)
     setRules((prev) => {
       let next = [...prev];
-      if (ruleProposal.deletedRuleIds.length > 0) {
-        next = next.filter((r) => !ruleProposal.deletedRuleIds.includes(r.id));
+      if (edited.deletedRuleIds.length > 0) {
+        next = next.filter((r) => !edited.deletedRuleIds.includes(r.id));
       }
-      for (const mod of ruleProposal.modifiedRules) {
+      for (const mod of edited.modifiedRules) {
         const idx = next.findIndex((r) => r.id === mod.id);
         if (idx >= 0) next[idx] = mod;
       }
-      if (ruleProposal.newRules.length > 0) {
-        next = [...next, ...ruleProposal.newRules];
-      }
-      if (ruleProposal.visibilityRules.length > 0) {
-        for (const vr of ruleProposal.visibilityRules) {
-          const existingIdx = next.findIndex(
-            (r) => isFieldVisibilityRule(r) && r.targetFieldId === vr.targetFieldId,
-          );
-          if (existingIdx >= 0) {
-            next[existingIdx] = vr;
-          } else {
-            next.push(vr);
-          }
-        }
+      if (edited.newRules.length > 0) {
+        next = [...next, ...edited.newRules];
       }
       return next;
     });
 
     const parts: string[] = [];
-    const rc = ruleProposal.newRules.length + ruleProposal.modifiedRules.length + ruleProposal.deletedRuleIds.length;
-    const fc = ruleProposal.newFields.length;
-    const qc = ruleProposal.proposedQuestions.length + ruleProposal.deletedQuestionIds.length;
-    const vc = ruleProposal.visibilityRules.length;
+    const rc = edited.newRules.length + edited.modifiedRules.length + edited.deletedRuleIds.length;
+    const fc = edited.newFields.length;
+    const qc = edited.proposedQuestions.length + edited.deletedQuestionIds.length;
     if (rc > 0) parts.push(`${rc} rule(s)`);
     if (fc > 0) parts.push(`${fc} field(s)`);
     if (qc > 0) parts.push(`${qc} question(s)`);
-    if (vc > 0) parts.push(`${vc} visibility rule(s)`);
     toast.success(`Applied ${parts.join(" + ") || "changes"}`);
     setRuleProposal(null);
   }
@@ -695,7 +1199,15 @@ export default function PropertySetupPage() {
           fieldIds: q.fieldIds.filter((x) => x !== fid),
         }))
         .filter((q) => q.fieldIds.length > 0);
-      return next.map((q, i) => ({ ...q, sort_order: i }));
+      // Drop child triggers that referenced the removed field
+      const cleaned = next.map((q) => {
+        if (q.trigger?.fieldId === fid) {
+          const { trigger: _t, parentQuestionId: _p, ...rest } = q;
+          return rest;
+        }
+        return q;
+      });
+      return normalizeQuestionOrder(cleaned);
     });
     setRules((prev) => prev.filter((r) => !ruleReferencesField(r, fid)));
     setFields((prev) => prev.filter((_, i) => i !== index));
@@ -709,20 +1221,171 @@ export default function PropertySetupPage() {
     ]);
   }
 
+  /** Update question + repair child triggers if this question (acting as a
+   *  parent) drops a field that any child's trigger depends on. */
   function updateQuestion(index: number, updated: Question) {
-    setQuestions((prev) => prev.map((q, i) => (i === index ? updated : q)));
+    const prev = questions[index];
+    if (!prev) {
+      setQuestions((qs) => qs.map((q, i) => (i === index ? updated : q)));
+      return;
+    }
+
+    const removedFids = prev.fieldIds.filter((f) => !updated.fieldIds.includes(f));
+    const childIdxs = questions
+      .map((q, i) => ({ q, i }))
+      .filter(({ q }) => q.parentQuestionId === prev.id);
+    const affected = childIdxs.filter(({ q }) =>
+      q.trigger ? removedFids.includes(q.trigger.fieldId) : false,
+    );
+
+    if (affected.length === 0) {
+      setQuestions((qs) => qs.map((q, i) => (i === index ? updated : q)));
+      return;
+    }
+
+    // Re-point each affected child trigger to a remaining field of the same kind
+    // when possible; otherwise reset operator/value. If parent has no fields at
+    // all after the edit, drop the trigger + parent link.
+    let kept = 0;
+    let reset = 0;
+    let orphaned = 0;
+    setQuestions((qs) => qs.map((q, i) => {
+      if (i === index) return updated;
+      if (q.parentQuestionId !== prev.id) return q;
+      if (!q.trigger || !removedFids.includes(q.trigger.fieldId)) return q;
+
+      const oldKind = fields.find((f) => f.id === q.trigger!.fieldId)?.value_kind;
+
+      if (updated.fieldIds.length === 0) {
+        orphaned += 1;
+        const { trigger: _t, parentQuestionId: _p, ...rest } = q;
+        return rest;
+      }
+
+      let pick = updated.fieldIds
+        .map((fid) => fields.find((f) => f.id === fid))
+        .find((f): f is LandlordField => !!f && f.value_kind === oldKind);
+      if (!pick) {
+        pick = fields.find((f) => f.id === updated.fieldIds[0]);
+      }
+      if (!pick) {
+        orphaned += 1;
+        const { trigger: _t, parentQuestionId: _p, ...rest } = q;
+        return rest;
+      }
+      if (pick.value_kind === oldKind) {
+        kept += 1;
+        return { ...q, trigger: { ...q.trigger!, fieldId: pick.id } };
+      }
+      reset += 1;
+      return {
+        ...q,
+        trigger: {
+          fieldId: pick.id,
+          operator: defaultOperatorForKind(pick.value_kind),
+          value: defaultValueForKind(pick.value_kind),
+        },
+      };
+    }));
+
+    if (orphaned > 0) {
+      toast.warning(
+        `${orphaned} follow-up(s) lost their trigger and were promoted to root questions.`,
+        { duration: 6000 },
+      );
+    }
+    if (kept > 0 && reset === 0) {
+      toast.info(`Re-pointed ${kept} follow-up trigger(s) to a remaining field on this question.`);
+    } else if (reset > 0 && kept === 0) {
+      toast.warning(
+        `Re-pointed ${reset} follow-up trigger(s); operator/value reset because the new trigger is a different type.`,
+        { duration: 5000 },
+      );
+    } else if (kept > 0 && reset > 0) {
+      toast.info(`Re-pointed ${kept + reset} follow-up trigger(s); ${reset} had operator/value reset.`);
+    }
+  }
+
+  function updateTrigger(index: number, patch: Partial<QuestionTrigger>) {
+    setQuestions((qs) => qs.map((q, i) => {
+      if (i !== index) return q;
+      if (!q.trigger) return q;
+      return { ...q, trigger: { ...q.trigger, ...patch } };
+    }));
   }
 
   function deleteQuestion(index: number) {
-    setQuestions((prev) => prev.filter((_, i) => i !== index));
+    const tree = buildQuestionTree(questions);
+    const node = findNode(tree, index);
+    const indicesToRemove = node ? collectSubtreeIndices(node) : [index];
+    const removeIds = new Set(indicesToRemove.map((i) => questions[i]?.id).filter(Boolean));
+
+    setQuestions((prev) =>
+      normalizeQuestionOrder(prev.filter((q) => !removeIds.has(q.id))),
+    );
   }
 
-  function moveQuestion(from: number, to: number) {
+  function requestDeleteQuestion(index: number, descendantCount: number) {
+    const q = questions[index];
+    if (!q) return;
+    const prevQuestions = questions;
+    deleteQuestion(index);
+    const label = descendantCount > 0
+      ? `Deleted question and ${descendantCount} follow-up${descendantCount === 1 ? "" : "s"}`
+      : "Deleted question";
+    toast(label, {
+      action: {
+        label: "Undo",
+        onClick: () => {
+          setQuestions(prevQuestions);
+        },
+      },
+      duration: 6000,
+    });
+  }
+
+  /** Move a contiguous block of questions (root + descendants) from `from` to `to`. */
+  function moveQuestion(from: number, to: number, count = 1) {
     setQuestions((prev) => {
       const next = [...prev];
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return next.map((q, i) => ({ ...q, sort_order: i }));
+      const block = next.splice(from, count);
+      const insertAt = to > from ? to - count : to;
+      next.splice(insertAt, 0, ...block);
+      return normalizeQuestionOrder(next);
+    });
+  }
+
+  /** Insert a follow-up question right after the subtree rooted at `parentIndex`,
+   *  parented to it via `parentQuestionId` and pre-configured with a trigger
+   *  on the parent's first field. */
+  function addFollowUp(parentIndex: number) {
+    const parent = questions[parentIndex];
+    if (!parent || parent.fieldIds.length === 0) return;
+    const triggerFid = parent.fieldIds[0];
+    const triggerField = fields.find((f) => f.id === triggerFid);
+    if (!triggerField) return;
+
+    const newQ: Question = {
+      id: `q_${generateId()}`,
+      text: "",
+      fieldIds: [],
+      sort_order: 0,
+      parentQuestionId: parent.id,
+      trigger: {
+        fieldId: triggerFid,
+        operator: defaultOperatorForKind(triggerField.value_kind),
+        value: defaultValueForKind(triggerField.value_kind),
+      },
+    };
+
+    setQuestions((prev) => {
+      const tree = buildQuestionTree(prev);
+      const parentNode = findNode(tree, parentIndex);
+      const subtreeIdxs = parentNode ? collectSubtreeIndices(parentNode) : [parentIndex];
+      const insertAt = Math.max(...subtreeIdxs) + 1;
+      const next = [...prev];
+      next.splice(insertAt, 0, newQ);
+      return normalizeQuestionOrder(next);
     });
   }
 
@@ -739,10 +1402,74 @@ export default function PropertySetupPage() {
 
   const isNew = !description.trim() && fields.length === 0 && questions.length === 0 && rules.length === 0;
 
+  const invalidRuleCount = countInvalidRuleConditions(rules, fields);
+  const invalidQuestionCount = questionInvalid.count;
+  const invalidIssueCount = invalidRuleCount + invalidQuestionCount;
+  const isReady = invalidIssueCount === 0;
+
   async function copyShareLink() {
+    if (!isReady) return;
+    if (!publishedAt) {
+      toast.error("Publish this property before sharing the applicant chat link.");
+      return;
+    }
     const url = `${window.location.origin}/chat/${id}`;
     await navigator.clipboard.writeText(url);
     toast.success("Chat link copied — share it with applicants");
+  }
+
+  async function handlePublish() {
+    if (!isReady) return;
+    const ok = await save({ published_at: new Date().toISOString() });
+    if (ok) toast.success("Published — applicants can use the chat link.");
+  }
+
+  function jumpToFirstQuestionError() {
+    const fid = questionInvalid.firstInvalidId;
+    if (!fid) return;
+    setQuestionJumpNonce((n) => n + 1);
+    // Ancestors expand in separate commits; retry until the target mounts or cap out.
+    let attempts = 0;
+    const maxAttempts = 24;
+    const tryScroll = () => {
+      const el = document.getElementById(`${fid}-question-error`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+      attempts += 1;
+      if (attempts < maxAttempts) requestAnimationFrame(tryScroll);
+    };
+    requestAnimationFrame(tryScroll);
+  }
+
+  function jumpToFirstRuleError() {
+    const cid = getFirstInvalidRuleConditionId(rules, fields);
+    if (!cid) return;
+    let attempts = 0;
+    const maxAttempts = 24;
+    const tryScroll = () => {
+      const el = document.getElementById(`${cid}-error`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+      attempts += 1;
+      if (attempts < maxAttempts) requestAnimationFrame(tryScroll);
+    };
+    requestAnimationFrame(tryScroll);
+  }
+
+  function handleFixIssuesClick() {
+    if (invalidQuestionCount > 0) {
+      setActiveTab("Questions");
+      jumpToFirstQuestionError();
+      return;
+    }
+    if (invalidRuleCount > 0) {
+      setActiveTab("Rules");
+      jumpToFirstRuleError();
+    }
   }
 
   return (
@@ -765,6 +1492,18 @@ export default function PropertySetupPage() {
               ·
             </span>
             <span
+              className={`shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                publishedAt
+                  ? "bg-teal-100 text-teal-800"
+                  : "bg-black/[0.06] text-[#1a2e2a]/50"
+              }`}
+            >
+              {publishedAt ? "Published" : "Draft"}
+            </span>
+            <span className="ml-1.5 shrink-0 text-[#1a2e2a]/25" aria-hidden>
+              ·
+            </span>
+            <span
               className="shrink-0 text-[11px] tabular-nums text-[#1a2e2a]/30"
               aria-live="polite"
             >
@@ -779,22 +1518,55 @@ export default function PropertySetupPage() {
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
-            <button type="button" onClick={() => void copyShareLink()} className="flex items-center gap-1.5 rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/50 transition-colors hover:bg-[#f7f9f8] hover:text-[#1a2e2a]">
+            <button
+              type="button"
+              onClick={() => void copyShareLink()}
+              disabled={!isReady || !publishedAt}
+              title={
+                !isReady
+                  ? "Fix all questions and rule values first"
+                  : !publishedAt
+                    ? "Publish before sharing the applicant link"
+                    : "Copy applicant chat link"
+              }
+              className="flex items-center gap-1.5 rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/50 transition-colors hover:bg-[#f7f9f8] hover:text-[#1a2e2a] disabled:opacity-40 disabled:cursor-not-allowed"
+            >
               <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden>
                 <path d="M10.5 5h-1a2 2 0 0 0-2 2v0a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v0a2 2 0 0 0-2-2ZM4.5 5h-1a2 2 0 0 0-2 2v0a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v0a2 2 0 0 0-2-2ZM5 7h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
               </svg>
               Share link
             </button>
-            <button
-              type="button"
-              onClick={async () => {
-                await flushSave();
-                window.open(`/chat/${id}`, "_blank");
-              }}
-              className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90"
-            >
-              Preview →
-            </button>
+            {isReady && !publishedAt && (
+              <button
+                type="button"
+                onClick={() => void handlePublish()}
+                disabled={saving}
+                className="rounded-lg border border-teal-700/40 bg-teal-50 px-3 py-1.5 text-xs font-medium text-teal-800 transition-colors hover:bg-teal-100 disabled:opacity-50"
+              >
+                Publish
+              </button>
+            )}
+            {!isReady ? (
+              <button
+                type="button"
+                onClick={handleFixIssuesClick}
+                className="rounded-lg bg-amber-100 px-3 py-1.5 text-xs font-medium text-amber-800 transition-colors hover:bg-amber-200"
+              >
+                Fix {invalidIssueCount} {invalidQuestionCount > 0 && invalidRuleCount > 0 ? "question or rule value" : invalidQuestionCount > 0 ? "question" : "rule value"}
+                {invalidIssueCount === 1 ? "" : "s"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={async () => {
+                  await flushSave();
+                  window.open(`/chat/${id}`, "_blank");
+                }}
+                className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90"
+              >
+                Preview →
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -817,7 +1589,7 @@ export default function PropertySetupPage() {
               </li>
               <li className="flex gap-2">
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-teal-700 text-[10px] font-bold text-white">3</span>
-                Add <strong>rules</strong> for auto-rejection or acceptance profiles, then <strong>Share link</strong> with applicants
+                Add <strong>rules</strong>, then <strong>Publish</strong> and share the applicant link
               </li>
             </ol>
           </section>
@@ -854,12 +1626,7 @@ export default function PropertySetupPage() {
               <button
                 key={tab}
                 type="button"
-                onClick={() => {
-                  if (activeTab === "Fields" && tab !== "Fields") {
-                    setFields(prev => prev.filter(f => f.id.trim() !== "" || f.label.trim() !== ""));
-                  }
-                  setActiveTab(tab);
-                }}
+                onClick={() => setActiveTab(tab)}
                 className={`px-3 py-3 text-sm font-medium transition-colors ${activeTab === tab
                   ? "border-b-2 border-teal-700 text-teal-700"
                   : "text-foreground/45 hover:text-foreground/70"
@@ -877,19 +1644,15 @@ export default function PropertySetupPage() {
                 <div>
                   <h3 className="text-sm font-medium text-foreground/80">Data schema</h3>
                   <p className="text-xs text-foreground/40">
-                    Define fields to store (used by screening rules and interview questions). Expand{" "}
-                    <strong className="text-foreground/55">Show field only when…</strong> on a field to
-                    gate it until other answers match (e.g. second occupant only if adults ≥ 2). Eligibility
-                    reject/require rules stay on the Rules tab.
+                    Define fields to store (used by screening rules and interview questions).
+                    Branching follow-ups live on the Questions tab — define which question triggers them there.
                   </p>
                 </div>
 
                 <LandlordFieldsSection
                   fields={fields}
+                  questions={questions}
                   onChange={setFields}
-                  allFields={fields}
-                  rules={rules}
-                  onRulesChange={setRules}
                   onBeforeDelete={(field, index) => {
                     requestDeleteField(index);
                     return false;
@@ -904,68 +1667,115 @@ export default function PropertySetupPage() {
                 <div>
                   <h3 className="text-sm font-medium text-foreground/80">Interview flow</h3>
                   <p className="text-xs text-foreground/40">
-                    Ordered questions asked to applicants. Each question collects one or more fields. Toggle field chips to link them.
+                    Ordered questions asked to applicants. Each question collects one or more fields.
+                    Add follow-ups to branch — they only appear when the parent question&apos;s answer matches the trigger.
                   </p>
                 </div>
 
+                {invalidQuestionCount > 0 && (
+                  <div className="flex items-center gap-3 text-sm">
+                    <span className="font-medium text-red-500">
+                      {invalidQuestionCount} invalid question{invalidQuestionCount === 1 ? "" : "s"} in this section.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={jumpToFirstQuestionError}
+                      className="text-red-500/70 underline decoration-red-500/30 underline-offset-2 transition-colors hover:text-red-600"
+                    >
+                      Jump to first error
+                    </button>
+                  </div>
+                )}
+
                 {/* Generate prompt */}
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={questionsPrompt}
-                    onChange={(e) => setQuestionsPrompt(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !loadingPhase && questionsPrompt.trim()) {
-                        e.preventDefault();
-                        void handleGenerateQuestions(questionsPrompt).then(() => setQuestionsPrompt(""));
-                      }
-                    }}
-                    placeholder="e.g. Ask about number of occupants, pets, income, and move-in date"
-                    className="flex-1 rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void handleGenerateQuestions(questionsPrompt).then(() => setQuestionsPrompt(""))}
-                    disabled={!questionsPrompt.trim() || loadingPhase !== null}
-                    className="flex shrink-0 items-center gap-1.5 rounded-lg border border-teal-700/30 bg-teal-50 px-3 py-2 text-xs font-medium text-teal-700 transition-colors hover:bg-teal-100 disabled:opacity-40"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
-                      <path d="M7 1v3M7 10v3M1 7h3M10 7h3M2.75 2.75l2.12 2.12M9.13 9.13l2.12 2.12M11.25 2.75l-2.12 2.12M4.87 9.13l-2.12 2.12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-                    </svg>
-                    {loadingPhase === "questions" ? "Generating…" : "Generate"}
-                  </button>
-                </div>
-
-                {/* Question list */}
-                <div className="space-y-2">
-                  {questions.map((q, i) => (
-                    <QuestionEditor
-                      key={q.id}
-                      question={q}
-                      fields={fields}
-                      onChange={(updated) => updateQuestion(i, updated)}
-                      onDelete={() => deleteQuestion(i)}
-                      onMoveUp={() => moveQuestion(i, i - 1)}
-                      onMoveDown={() => moveQuestion(i, i + 1)}
-                      isFirst={i === 0}
-                      isLast={i === questions.length - 1}
-                      maxFields={maxFieldsPerQuestion}
+                <div>
+                  <div className="flex items-start gap-2">
+                    <textarea
+                      ref={questionsPromptRef}
+                      value={questionsPrompt}
+                      onChange={(e) => setQuestionsPrompt(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey && !loadingPhase && questionsPrompt.trim()) {
+                          e.preventDefault();
+                          void handleGenerateQuestions(questionsPrompt).then(() => setQuestionsPrompt(""));
+                        }
+                      }}
+                      rows={1}
+                      placeholder="e.g. Occupants, income, pets, move-in"
+                      className="min-w-0 flex-1 resize-none overflow-hidden rounded-md border border-foreground/10 bg-[#f7f9f8] px-2.5 py-1.5 text-sm leading-snug text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
                     />
-                  ))}
+                    <button
+                      type="button"
+                      onClick={() => void handleGenerateQuestions(questionsPrompt).then(() => setQuestionsPrompt(""))}
+                      disabled={!questionsPrompt.trim() || loadingPhase !== null}
+                      title={
+                        loadingPhase === "questions"
+                          ? "Generating…"
+                          : !questionsPrompt.trim()
+                            ? "Describe what you want to ask, then we'll scaffold the questions for you."
+                            : "Scaffold questions from this description"
+                      }
+                      className="flex shrink-0 items-center gap-1.5 rounded-lg border border-teal-700/30 bg-teal-50 px-3 py-2 text-xs font-medium text-teal-700 transition-colors hover:bg-teal-100 disabled:opacity-40"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
+                        <path d="M7 1v3M7 10v3M1 7h3M10 7h3M2.75 2.75l2.12 2.12M9.13 9.13l2.12 2.12M11.25 2.75l-2.12 2.12M4.87 9.13l-2.12 2.12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                      </svg>
+                      {loadingPhase === "questions" ? "Generating…" : "Generate"}
+                    </button>
+                    <MaxFieldsPopover value={maxFieldsPerQuestion} onChange={setMaxFieldsPerQuestion} />
+                  </div>
+                  {!questionsPrompt.trim() && loadingPhase !== "questions" && (
+                    <p className="mt-1 text-[11px] text-foreground/40">
+                      Describe what to ask; we&apos;ll scaffold questions. Shift+Enter for a new line.
+                    </p>
+                  )}
                 </div>
 
-                <div className="flex items-center justify-between">
-                  <button
-                    type="button"
-                    onClick={addQuestion}
-                    className="flex items-center gap-1.5 rounded-lg border border-dashed border-foreground/20 px-4 py-2 text-sm text-foreground/50 transition-colors hover:border-foreground/40 hover:text-foreground/70"
-                  >
-                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-                    Add question
-                  </button>
-
-                  <MaxFieldsInput value={maxFieldsPerQuestion} onChange={setMaxFieldsPerQuestion} />
+                {/* Question list — recursive tree with depth-coded rails */}
+                <div className="space-y-2">
+                  {(() => {
+                    const tree = buildQuestionTree(questions);
+                    return tree.map((root, ri) => {
+                      const sz = subtreeSize(root);
+                      const prevRoot = ri > 0 ? tree[ri - 1] : null;
+                      const nextRoot = ri < tree.length - 1 ? tree[ri + 1] : null;
+                      return (
+                        <QuestionNode
+                          key={questions[root.index].id}
+                          node={root}
+                          questions={questions}
+                          fields={fields}
+                          depth={0}
+                          pathLabel={`Q${ri + 1}`}
+                          maxFields={maxFieldsPerQuestion}
+                          invalidQuestionIds={questionInvalid.invalidIds}
+                          firstInvalidQuestionId={questionInvalid.firstInvalidId}
+                          questionJumpNonce={questionJumpNonce}
+                          updateQuestion={updateQuestion}
+                          updateTrigger={updateTrigger}
+                          requestDeleteQuestion={requestDeleteQuestion}
+                          onMoveRootUp={prevRoot ? () => {
+                            moveQuestion(root.index, prevRoot.index, sz);
+                          } : undefined}
+                          onMoveRootDown={nextRoot ? () => {
+                            const nextSz = subtreeSize(nextRoot);
+                            moveQuestion(root.index, root.index + sz + nextSz, sz);
+                          } : undefined}
+                          addFollowUp={addFollowUp}
+                        />
+                      );
+                    });
+                  })()}
                 </div>
+
+                <button
+                  type="button"
+                  onClick={addQuestion}
+                  className="flex items-center gap-1.5 rounded-lg border border-dashed border-foreground/20 px-4 py-2 text-sm text-foreground/50 transition-colors hover:border-foreground/40 hover:text-foreground/70"
+                >
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                  Add question
+                </button>
               </div>
             )}
 
@@ -974,21 +1784,22 @@ export default function PropertySetupPage() {
               <div className="space-y-6">
                 <div className="flex flex-col gap-2">
                   <p className="text-xs text-foreground/40">
-                    Describe what rules to create — e.g. rejection criteria or acceptance profiles.
+                    Describe rules to add — rejections, acceptance profiles, or both. Shift+Enter for a new line.
                   </p>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
+                  <div className="flex items-start gap-2">
+                    <textarea
+                      ref={rulesPromptRef}
                       value={rulesPrompt}
                       onChange={(e) => setRulesPrompt(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter" && !loadingPhase && rulesPrompt.trim()) {
+                        if (e.key === "Enter" && !e.shiftKey && !loadingPhase && rulesPrompt.trim()) {
                           e.preventDefault();
                           void handleGenerateRules(rulesPrompt).then(() => setRulesPrompt(""));
                         }
                       }}
-                      placeholder="e.g. Reject smokers. Allow max 2 adults, or 3 if family with child."
-                      className="flex-1 rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
+                      rows={1}
+                      placeholder="e.g. No smoking; income 3× rent"
+                      className="min-w-0 flex-1 resize-none overflow-hidden rounded-md border border-foreground/10 bg-[#f7f9f8] px-2.5 py-1.5 text-sm leading-snug text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
                     />
                     <button
                       type="button"

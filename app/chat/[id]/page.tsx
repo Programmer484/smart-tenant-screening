@@ -4,8 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { ConfirmDialog } from "@/app/components/ConfirmDialog";
-import type { PropertyRecord, PropertyLinks, AiInstructions } from "@/lib/property";
-import { resolveAiInstructions, DEFAULT_LINKS } from "@/lib/property";
+import {
+  resolveAiInstructions,
+  DEFAULT_LINKS,
+  type PropertyLinks,
+  type PropertyRecord,
+  type AiInstructions,
+} from "@/lib/property";
 import type { LandlordField } from "@/lib/landlord-field";
 import { normalizeRulesList, type LandlordRule } from "@/lib/landlord-rule";
 import type { Question } from "@/lib/question";
@@ -67,7 +72,7 @@ export default function ChatPage() {
   const [debugOpen, setDebugOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [pageReady, setPageReady] = useState(false);
-  const [debugInfo, setDebugInfo] = useState<any>(null);
+  const [debugInfo, setDebugInfo] = useState<unknown>(null);
 
   const [showDebug] = useState(() =>
     typeof window !== "undefined" &&
@@ -75,11 +80,12 @@ export default function ChatPage() {
   );
 
   const [restartDialogOpen, setRestartDialogOpen] = useState(false);
+  const [listingUnpublished, setListingUnpublished] = useState(false);
 
   // Lifecycle state (server-authoritative via session DB)
   const [rejected, setRejected] = useState(false);
   const [completed, setCompleted] = useState(false);
-  const [qualified, setQualified] = useState(false);
+  const [, setQualified] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -150,6 +156,22 @@ export default function ChatPage() {
       }
 
       const p = propRes.data as PropertyRecord;
+
+      if (!p.published_at) {
+        setListingUnpublished(true);
+        setConfig({
+          id: p.id,
+          title: p.title,
+          description: p.description ?? "",
+          fields: [],
+          questions: [],
+          rules: [],
+          links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) },
+          aiInstructions: resolveAiInstructions(p.ai_instructions),
+        });
+        setPageReady(true);
+        return;
+      }
 
       const cfg: ChatConfig = {
         id: p.id,
@@ -266,7 +288,7 @@ export default function ChatPage() {
         reply?: string;
         extracted?: Extraction[];
         sessionStatus?: string;
-        debugInfo?: any;
+        debugInfo?: unknown;
       };
 
       const extracted = data.extracted ?? [];
@@ -361,6 +383,30 @@ export default function ChatPage() {
     );
   }
 
+  if (listingUnpublished && config) {
+    return (
+      <div className="flex h-[100dvh] flex-col" style={{ background: "#f0ede6" }}>
+        <header className="flex items-center gap-3 border-b border-black/8 bg-[#f0ede6] px-4 py-3">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-teal-800/10 text-teal-800">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden>
+              <rect x="2" y="7" width="14" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
+              <path d="M5 7V5a4 4 0 0 1 8 0v2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+              <rect x="7" y="11" width="4" height="3" rx="0.75" fill="currentColor" />
+            </svg>
+          </div>
+          <h1 className="min-w-0 flex-1 truncate text-sm font-semibold text-[#1a2e2a]">
+            {config.title || "Rental Application"}
+          </h1>
+        </header>
+        <main className="flex flex-1 flex-col items-center justify-center px-6">
+          <p className="max-w-sm text-center text-sm leading-relaxed text-[#1a2e2a]/65">
+            This screening is not live yet. The property owner must publish the listing before you can apply.
+          </p>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-[100dvh] flex-col" style={{ background: "#f0ede6" }}>
       {/* Header */}
@@ -443,7 +489,7 @@ export default function ChatPage() {
               </pre>
             )}
           </div>
-          {debugInfo && (
+          {debugInfo != null && (
             <div>
               <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[#1a2e2a]/40">Rule Engine & DB state</p>
               <pre className="font-mono text-[11px] leading-relaxed text-red-800/80 bg-red-100/50 p-2 rounded whitespace-pre-wrap break-words">

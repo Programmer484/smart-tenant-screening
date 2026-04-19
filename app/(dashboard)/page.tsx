@@ -14,7 +14,7 @@ export default async function PropertiesPage() {
 
   const { data: properties } = await supabase
     .from("properties")
-    .select("id,title,description,fields,questions,rules,created_at,updated_at")
+    .select("id,title,description,fields,questions,rules,published_at,created_at,updated_at")
     .order("created_at", { ascending: false });
 
   const list = (properties as PropertyRecord[] | null) ?? [];
@@ -47,12 +47,13 @@ export default async function PropertiesPage() {
       ) : (
         <div className="space-y-3">
           {list.map((p) => {
-            const fieldCount = ((p as any).fields ?? []).length;
-            const questionCount = ((p as any).questions ?? []).length;
+            const fieldCount = (p.fields ?? []).length;
+            const questionCount = (p.questions ?? []).length;
             const ruleCount = p.rules?.length ?? 0;
             const desc = (p.description ?? "").trim();
             const updatedAt = p.updated_at ?? p.created_at;
             const relTime = updatedAt ? timeAgo(updatedAt) : null;
+            const isPublished = !!p.published_at;
 
             return (
               <div
@@ -65,9 +66,18 @@ export default async function PropertiesPage() {
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0 flex-1">
-                      <h2 className="text-base font-semibold text-[#1a2e2a] group-hover:text-teal-800 transition-colors">
-                        {p.title}
-                      </h2>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-base font-semibold text-[#1a2e2a] group-hover:text-teal-800 transition-colors">
+                          {p.title}
+                        </h2>
+                        <span
+                          className={`shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                            isPublished ? "bg-teal-100 text-teal-800" : "bg-black/[0.06] text-[#1a2e2a]/45"
+                          }`}
+                        >
+                          {isPublished ? "Published" : "Draft"}
+                        </span>
+                      </div>
                       {desc && (
                         <p className="mt-1.5 line-clamp-1 text-sm text-[#1a2e2a]/45">
                           {desc}
@@ -87,20 +97,29 @@ export default async function PropertiesPage() {
                   </div>
                 </Link>
                 <div className="flex items-center gap-2 border-t border-black/5 px-6 py-3">
-                  <Link
-                    href={`/chat/${p.id}`}
-                    target="_blank"
-                    className="rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/60 transition-colors hover:bg-[#f7f9f8] hover:text-[#1a2e2a]"
-                  >
-                    Chat
-                  </Link>
+                  {isPublished ? (
+                    <Link
+                      href={`/chat/${p.id}`}
+                      target="_blank"
+                      className="rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/60 transition-colors hover:bg-[#f7f9f8] hover:text-[#1a2e2a]"
+                    >
+                      Chat
+                    </Link>
+                  ) : (
+                    <span
+                      title="Publish this property from the editor to enable applicant chat"
+                      className="cursor-not-allowed rounded-lg border border-black/5 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/30"
+                    >
+                      Chat
+                    </span>
+                  )}
                   <Link
                     href={`/applicants?property=${p.id}`}
                     className="rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/60 transition-colors hover:bg-[#f7f9f8] hover:text-[#1a2e2a]"
                   >
                     Applicants
                   </Link>
-                  <PropertyCardActions propertyId={p.id} propertyTitle={p.title} />
+                  <PropertyCardActions propertyId={p.id} propertyTitle={p.title} isPublished={isPublished} />
                 </div>
               </div>
             );

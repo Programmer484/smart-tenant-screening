@@ -8,12 +8,116 @@ import {
   normalizeEnumOptions,
   validateEnumOptions,
 } from "@/lib/landlord-field";
-import type { Question } from "@/lib/question";
-import { type LandlordRule, OPERATORS_BY_KIND } from "@/lib/landlord-rule";
-import { callClaude, ClaudeApiError, extractText, stripCodeFences } from "@/lib/anthropic";
+import type { Question, QuestionTrigger } from "@/lib/question";
+import { OPERATORS_BY_KIND, VALUELESS_OPERATORS } from "@/lib/landlord-rule";
+import { callClaude, ClaudeApiError, extractToolUse } from "@/lib/anthropic";
 import { DEFAULT_MAX_FIELDS_PER_QUESTION } from "@/lib/property";
 
 const DEBUG = process.env.NODE_ENV !== "production";
+
+/** Large field + question payloads can be verbose; give the model headroom. */
+const GENERATE_FIELDS_MAX_OUTPUT_TOKENS = 8192;
+
+const FIELD_INPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    id: {
+      type: "string",
+      pattern: "^[a-z][a-z0-9_]*$",
+      description: "snake_case identifier; must start with a letter",
+    },
+    label: { type: "string", description: "Human-readable field label" },
+    value_kind: { type: "string", enum: [...FIELD_VALUE_KINDS] },
+    options: {
+      type: "array",
+      items: { type: "string" },
+      description: "Required when value_kind is 'enum' (>=2 distinct choices)",
+    },
+  },
+  required: ["id", "label", "value_kind"],
+} as const;
+
+const TRIGGER_INPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    fieldId: {
+      type: "string",
+      description: "MUST be one of the parent question's fieldIds",
+    },
+    operator: { type: "string" },
+    value: {
+      type: "string",
+      description:
+        "Boolean values must be the literal strings 'true' or 'false'. Omit for is_empty/is_not_empty.",
+    },
+  },
+  required: ["fieldId", "operator"],
+} as const;
+
+const QUESTION_INPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    id: {
+      type: "string",
+      description: "Use existing question id when updating; otherwise a new id starting with 'q_'",
+    },
+    text: { type: "string", description: "Question shown to the applicant" },
+    fieldIds: {
+      type: "array",
+      items: { type: "string" },
+      minItems: 1,
+      description: "IDs of fields this question collects (must exist in newFields or EXISTING FIELDS)",
+    },
+    extract_hint: { type: "string" },
+    parentQuestionId: {
+      type: "string",
+      description:
+        "Set when this question is a conditional follow-up. Must reference another question's id (existing or in this same proposal). Omit for root questions.",
+    },
+    trigger: {
+      ...TRIGGER_INPUT_SCHEMA,
+      description:
+        "Required when parentQuestionId is set. The trigger.fieldId must be one of the parent question's fieldIds.",
+    },
+  },
+  required: ["id", "text", "fieldIds"],
+} as const;
+
+const PROPOSE_TOOL = {
+  name: "propose_fields_and_questions",
+  description:
+    "Submit the proposed schema fields, interview questions (with optional parent + trigger for conditional follow-ups), and deletions for the landlord's screening flow.",
+  input_schema: {
+    type: "object",
+    properties: {
+      newFields: { type: "array", items: FIELD_INPUT_SCHEMA },
+      questions: { type: "array", items: QUESTION_INPUT_SCHEMA },
+      deletedQuestionIds: {
+        type: "array",
+        items: { type: "string" },
+        description: "IDs of EXISTING QUESTIONS to remove (e.g. when merged into another)",
+      },
+    },
+    required: ["newFields", "questions", "deletedQuestionIds"],
+  },
+} as const;
+
+const REPAIR_TOOL = {
+  name: "define_missing_fields",
+  description:
+    "Define schema definitions for the listed missing field IDs so they can be referenced by interview questions.",
+  input_schema: {
+    type: "object",
+    properties: {
+      newFields: {
+        type: "array",
+        minItems: 1,
+        items: FIELD_INPUT_SCHEMA,
+      },
+    },
+    required: ["newFields"],
+  },
+} as const;
 
 function log(label: string, data?: unknown) {
   if (!DEBUG) return;
@@ -25,50 +129,26 @@ function log(label: string, data?: unknown) {
   }
 }
 
-/**
- * Attempt to fix common JSON issues from LLM output:
- * trailing commas, truncated output (missing closing braces/brackets).
- */
-function repairJson(raw: string): string {
-  let s = raw.trim();
-  s = s.replace(/,\s*([\]}])/g, "$1");
-  const opens = { "{": "}", "[": "]" };
-  const closes = new Set(["}", "]"]);
-  const stack: string[] = [];
-  let inString = false;
-  let escaped = false;
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
-    if (escaped) { escaped = false; continue; }
-    if (ch === "\\") { escaped = true; continue; }
-    if (ch === '"') { inString = !inString; continue; }
-    if (inString) continue;
-    if (ch in opens) stack.push(opens[ch as keyof typeof opens]);
-    else if (closes.has(ch)) stack.pop();
-  }
-  while (stack.length > 0) s += stack.pop();
-  return s;
-}
-
 function buildSystemPrompt(
   existingFields: { id: string; label: string; value_kind: string }[],
-  existingQuestions: { id: string; text: string; fieldIds: string[] }[],
-  existingVisibilityRules: { targetFieldId: string; conditions: { fieldId: string; operator: string; value: string }[] }[],
+  existingQuestions: { id: string; text: string; fieldIds: string[]; parentQuestionId?: string; trigger?: QuestionTrigger }[],
   maxFieldsPerQuestion: number,
   generationAttempt: 0 | 1,
 ): string {
   let prompt = `You are a rental application assistant. Given a landlord's prompt, generate the data FIELDS needed and the interview QUESTIONS to collect them.
 
+You MUST respond by calling the "${PROPOSE_TOOL.name}" tool with the proposal as its input. Do not write any prose; the tool input is the entire response.
+
 IMPORTANT:
 - The landlord will describe what they want to ask applicants.
 - Your job is to create:
   1. Fields (data schema) — the atomic data points to store. First, define the most natural human-facing label. Then, derive a concise, descriptive snake_case ID from that label.
-  2. Questions (interview flow) — the questions to ask tenants, each linked to one or more fields
-  3. Visibility rules (optional) — conditions that control when a field's question should be asked
+  2. Questions (interview flow) — the questions to ask tenants, each linked to one or more fields. Conditional follow-ups carry a "parentQuestionId" + "trigger".
 
 RULES:
 - A question CAN collect multiple fields (compound questions), but no question should collect more than ${maxFieldsPerQuestion} field(s). If you need more, split into multiple questions.
 - Every NEW field must be referenced by at least one question.
+- Each field is OWNED BY EXACTLY ONE question — never put the same fieldId on two different questions.
 - Do NOT duplicate fields that already exist.
 - Prefer FEWER questions: if new fields are on the SAME TOPIC as an existing question (e.g. house rules, smoking, pets, drugs, lease compliance — or any similar screening theme), UPDATE that existing question: return its original "id", merge the new field id(s) into "fieldIds", and revise "text" so one natural question covers all of those fields. Only create a NEW question when the topic is clearly separate or merging would make the question awkward.
 - When the landlord is adding fields for new screening rules, still look at EXISTING QUESTIONS below: reuse and expand a matching question whenever possible instead of adding redundant questions.
@@ -77,30 +157,25 @@ RULES:
 - The total fieldIds per question must NOT exceed ${maxFieldsPerQuestion}. If an existing question would exceed this after merging, split: delete the old one and create new questions.
 - CRITICAL: Every field ID in every question's "fieldIds" array MUST either appear in EXISTING FIELDS below OR in your "newFields" output. Do not reference field IDs that are not defined.
 
-VISIBILITY RULES:
-- If a question should only be asked when a prior answer meets a condition (e.g. "ask pet deposit only if has_pets is true"), add a visibilityRule with targetFieldId set to one of that question's fieldIds and a conditions array.
-- Only create visibility rules when there is a clear logical dependency between fields. Most questions need NO visibility rule.
-- The targetFieldId must be an existing or newly created field. Each condition's fieldId must also be a known field.
-- Valid operators depend on the field's value_kind: number: ==,!=,>,>=,<,<=  boolean: ==  text: ==,!=  date: ==,!=,>,>=,<,<=  enum: ==,!=
-- Do NOT duplicate visibility rules that already exist (see EXISTING VISIBILITY RULES below if any).
-
-Return ONLY a valid JSON object with this structure — no explanation, no code fences:
-{
-  "newFields": [
-    { "id": "snake_case_id", "label": "Human-readable label", "value_kind": "text|number|boolean|date|enum", "options": ["only", "for", "enum"] }
-  ],
-  "questions": [
-    { "id": "q_snake_case", "text": "Question to ask the applicant", "fieldIds": ["field_id_1", "field_id_2"], "extract_hint": "optional extraction hint" }
-  ],
-  "deletedQuestionIds": ["q_old_id"],
-  "visibilityRules": [
-    { "targetFieldId": "field_that_should_be_conditional", "conditions": [{ "fieldId": "prerequisite_field", "operator": "==", "value": "true" }] }
-  ]
-}
+CONDITIONAL FOLLOW-UPS (parentQuestionId + trigger):
+- A follow-up is asked only when its parent question's answer matches a condition (e.g. "ask pet_count only if has_pets is true").
+- To create one: include the follow-up in "questions" with parentQuestionId = the parent question's id, and trigger = { fieldId, operator, value } where fieldId MUST be one of the PARENT question's fieldIds.
+- The parent's fieldId must already be on the parent — child follow-ups can ONLY trigger off their direct parent's answers, not arbitrary earlier ones. Build deeper chains by chaining parents (Q1 → Q2 → Q3), each child triggering off ITS parent.
+- Sibling follow-ups: multiple follow-ups can share the same parentQuestionId and trigger off the same (or different) parent fields.
+- Make sure the parent question appears EARLIER than its children in the "questions" array.
+- Most questions need NO trigger — only add it when there is a clear logical dependency.
+- Valid operators depend on the parent field's value_kind. All kinds also support is_empty / is_not_empty (which take NO value):
+  number: ==,!=,>,>=,<,<=,is_empty,is_not_empty
+  boolean: ==,is_empty,is_not_empty
+  text: ==,!=,contains,is_empty,is_not_empty
+  date: ==,!=,>,>=,<,<=,is_empty,is_not_empty
+  enum: ==,!=,is_empty,is_not_empty
+- For is_empty / is_not_empty, omit the trigger "value" (or use an empty string).
+- For boolean triggers, value MUST be the string "true" or "false" (lowercase).
 
 Value kinds: ${JSON.stringify(FIELD_VALUE_KINDS)}
 If value_kind is "enum", include "options" with at least 2 distinct choices.
-If no changes are needed, return {"newFields":[],"questions":[],"deletedQuestionIds":[],"visibilityRules":[]}.`;
+If no changes are needed, call the tool with all three arrays empty.`;
 
   if (generationAttempt === 1) {
     prompt += `
@@ -110,13 +185,18 @@ GENERATION ATTEMPT: 2 (retry). A previous pass referenced field IDs that were no
 
   if (existingFields.length > 0) {
     prompt += `\n\nEXISTING FIELDS (do NOT duplicate):\n${existingFields.map((f) => `  - id: "${f.id}", label: "${f.label}", value_kind: "${f.value_kind}"`).join("\n")}`;
-    prompt += `\nYou may reference these existing field IDs in new or updated questions and in visibility rule conditions.`;
+    prompt += `\nYou may reference these existing field IDs in new or updated questions and in trigger conditions.`;
   }
   if (existingQuestions.length > 0) {
-    prompt += `\n\nEXISTING QUESTIONS (you may update or delete these — use their exact "id" to reference them):\n${existingQuestions.map((q) => `  - id: "${q.id}", text: "${q.text}", fieldIds: [${q.fieldIds.join(", ")}]`).join("\n")}`;
-  }
-  if (existingVisibilityRules.length > 0) {
-    prompt += `\n\nEXISTING VISIBILITY RULES (do NOT duplicate):\n${existingVisibilityRules.map((r) => `  - Show "${r.targetFieldId}" only when: ${r.conditions.map((c) => `${c.fieldId} ${c.operator} ${c.value}`).join(" AND ")}`).join("\n")}`;
+    prompt += `\n\nEXISTING QUESTIONS (you may update or delete these — use their exact "id" to reference them):\n${existingQuestions
+      .map((q) => {
+        const parent = q.parentQuestionId ? `, parentQuestionId: "${q.parentQuestionId}"` : "";
+        const trig = q.trigger
+          ? `, trigger: { fieldId: "${q.trigger.fieldId}", operator: "${q.trigger.operator}"${q.trigger.value ? `, value: "${q.trigger.value}"` : ""} }`
+          : "";
+        return `  - id: "${q.id}", text: "${q.text}", fieldIds: [${q.fieldIds.join(", ")}]${parent}${trig}`;
+      })
+      .join("\n")}`;
   }
 
   return prompt;
@@ -125,11 +205,10 @@ GENERATION ATTEMPT: 2 (retry). A previous pass referenced field IDs that were no
 function buildRepairFieldsPrompt(missingIds: string[]): string {
   return `You are a rental application schema assistant. The interview generator referenced field IDs that are not yet defined in the database.
 
-Return ONLY valid JSON — no markdown, no code fences:
-{ "newFields": [ { "id": "exact_snake_case_id", "label": "Human label", "value_kind": "text|number|boolean|date|enum", "options": ["only","for","enum"] } ] }
+You MUST respond by calling the "${REPAIR_TOOL.name}" tool with definitions for every missing field id below.
 
 Rules:
-- You MUST include exactly one object per missing field id, using that EXACT "id" string (same spelling and casing).
+- Include exactly one object per missing field id, using that EXACT "id" string (same spelling and casing).
 - Choose an appropriate value_kind and human-readable label from context.
 - If value_kind is "enum", include at least 2 options.
 - Value kinds allowed: ${JSON.stringify(FIELD_VALUE_KINDS)}
@@ -171,6 +250,9 @@ function parseGeneratedField(v: unknown): LandlordField | null {
   return out;
 }
 
+/** Parse a question, but DEFER trigger validation — we need the full question
+ *  list (existing + proposed) and field schema, which we don't have at this
+ *  point. We just preserve raw parent + trigger fields and validate later. */
 function parseGeneratedQuestion(v: unknown): Question | null {
   if (typeof v !== "object" || v === null) return null;
   const q = v as Record<string, unknown>;
@@ -180,51 +262,93 @@ function parseGeneratedQuestion(v: unknown): Question | null {
   const fieldIds = (q.fieldIds as unknown[]).filter((x): x is string => typeof x === "string");
   if (fieldIds.length === 0) return null;
 
-  return {
+  const out: Question = {
     id: q.id,
     text: q.text,
     fieldIds,
     sort_order: 0,
     extract_hint: typeof q.extract_hint === "string" ? q.extract_hint : undefined,
   };
+
+  if (typeof q.parentQuestionId === "string" && q.parentQuestionId.trim()) {
+    out.parentQuestionId = q.parentQuestionId;
+  }
+
+  if (typeof q.trigger === "object" && q.trigger !== null) {
+    const t = q.trigger as Record<string, unknown>;
+    if (typeof t.fieldId === "string" && typeof t.operator === "string") {
+      const value = typeof t.value === "string" ? t.value : "";
+      out.trigger = {
+        fieldId: t.fieldId,
+        operator: t.operator,
+        value,
+      };
+    }
+  }
+
+  return out;
 }
 
-function generateId() {
-  return Math.random().toString(36).slice(2, 9);
-}
+/** After the LLM returns, validate parent/trigger pairs against the full set
+ *  of (existing + proposed) questions and known fields. Drops a question's
+ *  trigger (and parentQuestionId) if it can't be resolved — we'd rather show
+ *  it as a root than silently break the tree. */
+function sanitizeQuestionTriggers(
+  proposed: Question[],
+  existingQuestions: { id: string; fieldIds: string[] }[],
+  knownFields: Map<string, FieldValueKind>,
+): { questions: Question[]; droppedTriggers: number } {
+  const allById = new Map<string, { fieldIds: string[] }>();
+  for (const eq of existingQuestions) allById.set(eq.id, { fieldIds: eq.fieldIds });
+  for (const pq of proposed) allById.set(pq.id, { fieldIds: pq.fieldIds });
 
-function parseVisibilityRule(
-  v: unknown,
-  allFields: Map<string, FieldValueKind>,
-): LandlordRule | null {
-  if (typeof v !== "object" || v === null) return null;
-  const r = v as Record<string, unknown>;
-  const targetFieldId = typeof r.targetFieldId === "string" ? r.targetFieldId : null;
-  if (!targetFieldId || !allFields.has(targetFieldId)) return null;
-  if (!Array.isArray(r.conditions) || r.conditions.length === 0) return null;
+  let droppedTriggers = 0;
+  const out: Question[] = proposed.map((q) => {
+    if (!q.parentQuestionId) {
+      if (q.trigger) {
+        droppedTriggers++;
+        const { trigger: _trig, ...rest } = q;
+        return rest;
+      }
+      return q;
+    }
+    const parent = allById.get(q.parentQuestionId);
+    if (!parent || q.parentQuestionId === q.id) {
+      droppedTriggers++;
+      const { parentQuestionId: _p, trigger: _t, ...rest } = q;
+      return rest;
+    }
+    if (!q.trigger) {
+      droppedTriggers++;
+      const { parentQuestionId: _p, ...rest } = q;
+      return rest;
+    }
+    if (!parent.fieldIds.includes(q.trigger.fieldId)) {
+      droppedTriggers++;
+      const { parentQuestionId: _p, trigger: _t, ...rest } = q;
+      return rest;
+    }
+    const kind = knownFields.get(q.trigger.fieldId);
+    if (!kind) {
+      droppedTriggers++;
+      const { parentQuestionId: _p, trigger: _t, ...rest } = q;
+      return rest;
+    }
+    const validOps = OPERATORS_BY_KIND[kind];
+    if (!validOps?.includes(q.trigger.operator)) {
+      droppedTriggers++;
+      const { parentQuestionId: _p, trigger: _t, ...rest } = q;
+      return rest;
+    }
+    if (!VALUELESS_OPERATORS.has(q.trigger.operator) && !q.trigger.value.trim()) {
+      droppedTriggers++;
+      const { parentQuestionId: _p, trigger: _t, ...rest } = q;
+      return rest;
+    }
+    return q;
+  });
 
-  const conditions = r.conditions
-    .filter((c): c is Record<string, unknown> => typeof c === "object" && c !== null)
-    .map((c) => {
-      if (typeof c.fieldId !== "string" || typeof c.operator !== "string" || c.value == null) return null;
-      const condFieldKind = allFields.get(c.fieldId);
-      if (!condFieldKind) return null;
-      const validOps = OPERATORS_BY_KIND[condFieldKind];
-      if (!validOps?.includes(c.operator)) return null;
-      const value = String(c.value).trim();
-      if (!value) return null;
-      return { id: generateId(), fieldId: c.fieldId, operator: c.operator, value };
-    })
-    .filter((c): c is NonNullable<typeof c> => c !== null);
-
-  if (conditions.length === 0) return null;
-
-  return {
-    id: generateId(),
-    kind: "ask" as const,
-    targetFieldId,
-    conditions,
-  };
+  return { questions: out, droppedTriggers };
 }
 
 function knownFieldIdSet(
@@ -261,16 +385,14 @@ type ParsedGenerateResult = {
   newFields: LandlordField[];
   questions: Question[];
   deletedQuestionIds: string[];
-  visibilityRules: LandlordRule[];
   rawFieldsLen: number;
   rawQuestionsLen: number;
-  rawVisLen: number;
 };
 
 function parseResultObject(
   result: Record<string, unknown>,
   existingFields: { id: string; label: string; value_kind: string }[],
-  existingVisibilityRules: { targetFieldId: string; conditions: { fieldId: string; operator: string; value: string }[] }[],
+  existingQuestions: { id: string; fieldIds: string[] }[],
 ): ParsedGenerateResult {
   const rawFields = Array.isArray(result.newFields)
     ? result.newFields
@@ -282,7 +404,7 @@ function parseResultObject(
     .filter((x): x is LandlordField => x !== null);
 
   const rawQuestions = Array.isArray(result.questions) ? result.questions : [];
-  const questions = rawQuestions
+  const proposedQuestions = rawQuestions
     .map(parseGeneratedQuestion)
     .filter((x): x is Question => x !== null);
 
@@ -300,42 +422,40 @@ function parseResultObject(
     allFieldKinds.set(nf.id, nf.value_kind);
   }
 
-  const rawVisRules = Array.isArray(result.visibilityRules) ? result.visibilityRules : [];
-  const existingTargets = new Set(existingVisibilityRules.map((r) => r.targetFieldId));
-  const visibilityRules = rawVisRules
-    .map((v) => parseVisibilityRule(v, allFieldKinds))
-    .filter((r): r is LandlordRule => r !== null)
-    .filter((r) => !existingTargets.has(r.targetFieldId!));
+  const remainingExisting = existingQuestions.filter((eq) => !deletedQuestionIds.includes(eq.id));
+  const { questions, droppedTriggers } = sanitizeQuestionTriggers(
+    proposedQuestions,
+    remainingExisting,
+    allFieldKinds,
+  );
+  if (DEBUG && droppedTriggers > 0) log("dropped invalid triggers", droppedTriggers);
 
   return {
     newFields,
     questions,
     deletedQuestionIds,
-    visibilityRules,
     rawFieldsLen: rawFields.length,
     rawQuestionsLen: rawQuestions.length,
-    rawVisLen: rawVisRules.length,
   };
 }
 
-async function callClaudeJson(key: string, system: string, user: string): Promise<unknown> {
+async function callProposeTool(
+  key: string,
+  system: string,
+  description: string,
+): Promise<Record<string, unknown>> {
   const response = await callClaude(key, {
     system,
-    messages: [{ role: "user", content: user }],
-    max_tokens: 2048,
+    messages: [{ role: "user", content: description }],
+    max_tokens: GENERATE_FIELDS_MAX_OUTPUT_TOKENS,
+    tools: [PROPOSE_TOOL as unknown as { name: string; description: string; input_schema: Record<string, unknown> }],
+    tool_choice: { type: "tool", name: PROPOSE_TOOL.name },
   });
-  const raw = extractText(response);
-  const cleaned = stripCodeFences(raw);
-  try {
-    return JSON.parse(cleaned);
-  } catch (firstErr) {
-    const repaired = repairJson(cleaned);
-    try {
-      return JSON.parse(repaired);
-    } catch {
-      throw new Error(`JSON parse failed: ${(firstErr as Error).message}`);
-    }
+  const input = extractToolUse<Record<string, unknown>>(response, PROPOSE_TOOL.name);
+  if (!input) {
+    throw new Error(`Model did not invoke ${PROPOSE_TOOL.name} tool`);
   }
+  return input;
 }
 
 async function repairMissingFields(
@@ -347,12 +467,19 @@ async function repairMissingFields(
   const system = buildRepairFieldsPrompt(missingIds);
   const user = `Landlord instruction:\n${description}\n\nProposed questions that reference the missing ids (for context):\n${JSON.stringify(questionsSnapshot.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })), null, 2)}`;
 
-  const parsed = await callClaudeJson(key, system, user);
-  if (typeof parsed !== "object" || parsed === null) {
-    throw new Error("Repair response was not an object");
+  const response = await callClaude(key, {
+    system,
+    messages: [{ role: "user", content: user }],
+    max_tokens: GENERATE_FIELDS_MAX_OUTPUT_TOKENS,
+    tools: [REPAIR_TOOL as unknown as { name: string; description: string; input_schema: Record<string, unknown> }],
+    tool_choice: { type: "tool", name: REPAIR_TOOL.name },
+  });
+  const input = extractToolUse<{ newFields?: unknown[] }>(response, REPAIR_TOOL.name);
+  if (!input) {
+    throw new Error(`Model did not invoke ${REPAIR_TOOL.name} tool`);
   }
-  const rec = parsed as Record<string, unknown>;
-  const raw = Array.isArray(rec.newFields) ? rec.newFields : [];
+
+  const raw = Array.isArray(input.newFields) ? input.newFields : [];
   const fields = raw.map(parseGeneratedField).filter((x): x is LandlordField => x !== null);
   const byId = new Map(fields.map((f) => [f.id, f]));
   const missing: string[] = [];
@@ -386,7 +513,7 @@ function augmentExistingForRetry(
 }
 
 export type GenerateFieldsResponse =
-  | { ok: true; newFields: LandlordField[]; questions: Question[]; deletedQuestionIds: string[]; visibilityRules: LandlordRule[] }
+  | { ok: true; newFields: LandlordField[]; questions: Question[]; deletedQuestionIds: string[] }
   | { ok: false; error: string; violations?: { text: string; fieldIds: string[]; id?: string }[]; orphanFieldIds?: string[] };
 
 export async function POST(req: Request) {
@@ -415,25 +542,23 @@ export async function POST(req: Request) {
 
   const existingFields: { id: string; label: string; value_kind: string }[] = Array.isArray(rec.existingFields)
     ? (rec.existingFields as unknown[]).filter(
-        (x): x is { id: string; label: string; value_kind: string } =>
-          typeof x === "object" && x !== null && typeof (x as any).id === "string" && typeof (x as any).label === "string"
+        (x): x is { id: string; label: string; value_kind: string } => {
+          if (typeof x !== "object" || x === null) return false;
+          const o = x as Record<string, unknown>;
+          return typeof o.id === "string" && typeof o.label === "string";
+        }
       )
     : [];
 
-  const existingQuestions: { id: string; text: string; fieldIds: string[] }[] = Array.isArray(rec.existingQuestions)
+  const existingQuestions: { id: string; text: string; fieldIds: string[]; parentQuestionId?: string; trigger?: QuestionTrigger }[] = Array.isArray(rec.existingQuestions)
     ? (rec.existingQuestions as unknown[]).filter(
-        (x): x is { id: string; text: string; fieldIds: string[] } =>
-          typeof x === "object" && x !== null && typeof (x as any).id === "string" && typeof (x as any).text === "string"
+        (x): x is { id: string; text: string; fieldIds: string[]; parentQuestionId?: string; trigger?: QuestionTrigger } => {
+          if (typeof x !== "object" || x === null) return false;
+          const o = x as Record<string, unknown>;
+          return typeof o.id === "string" && typeof o.text === "string";
+        }
       )
     : [];
-
-  const existingVisibilityRules: { targetFieldId: string; conditions: { fieldId: string; operator: string; value: string }[] }[] =
-    Array.isArray(rec.existingVisibilityRules)
-      ? (rec.existingVisibilityRules as unknown[]).filter(
-          (x): x is { targetFieldId: string; conditions: { fieldId: string; operator: string; value: string }[] } =>
-            typeof x === "object" && x !== null && typeof (x as any).targetFieldId === "string" && Array.isArray((x as any).conditions)
-        )
-      : [];
 
   try {
     log("prompt (user)", description);
@@ -444,46 +569,14 @@ export async function POST(req: Request) {
     const system0 = buildSystemPrompt(
       existingFields,
       existingQuestions,
-      existingVisibilityRules,
       maxFieldsPerQuestion,
       0,
     );
 
-    const response0 = await callClaude(key, {
-      system: system0,
-      messages: [{ role: "user", content: description }],
-      max_tokens: 2048,
-    });
-    const raw0 = extractText(response0);
-    const cleaned0 = stripCodeFences(raw0);
-    log("raw response (attempt 0)", raw0);
+    const toolInput0 = await callProposeTool(key, system0, description);
+    log("tool input (attempt 0)", toolInput0);
 
-    let parsed0: unknown;
-    try {
-      parsed0 = JSON.parse(cleaned0);
-    } catch (firstErr) {
-      log("JSON.parse failed, attempting repair…");
-      const repaired = repairJson(cleaned0);
-      try {
-        parsed0 = JSON.parse(repaired);
-        log("repair succeeded");
-      } catch {
-        log("repair also failed", (firstErr as Error).message);
-        return NextResponse.json(
-          { ok: false, error: "AI returned invalid JSON", raw: cleaned0 },
-          { status: 502 },
-        );
-      }
-    }
-
-    if (typeof parsed0 !== "object" || parsed0 === null) {
-      return NextResponse.json(
-        { ok: false, error: "AI response was not an object", raw: cleaned0 },
-        { status: 502 },
-      );
-    }
-
-    const firstPass = parseResultObject(parsed0 as Record<string, unknown>, existingFields, existingVisibilityRules);
+    const firstPass = parseResultObject(toolInput0, existingFields, existingQuestions);
 
     let parsed = firstPass;
     let known = knownFieldIdSet(existingFields, parsed.newFields);
@@ -510,43 +603,14 @@ export async function POST(req: Request) {
       const system1 = buildSystemPrompt(
         augmentedExisting,
         existingQuestions,
-        existingVisibilityRules,
         maxFieldsPerQuestion,
         1,
       );
 
-      const response1 = await callClaude(key, {
-        system: system1,
-        messages: [{ role: "user", content: description }],
-        max_tokens: 2048,
-      });
-      const raw1 = extractText(response1);
-      const cleaned1 = stripCodeFences(raw1);
-      log("raw response (attempt 1)", raw1);
+      const toolInput1 = await callProposeTool(key, system1, description);
+      log("tool input (attempt 1)", toolInput1);
 
-      let parsed1: unknown;
-      try {
-        parsed1 = JSON.parse(cleaned1);
-      } catch (firstErr) {
-        const repaired = repairJson(cleaned1);
-        try {
-          parsed1 = JSON.parse(repaired);
-        } catch {
-          return NextResponse.json(
-            { ok: false, error: "AI returned invalid JSON on retry", raw: cleaned1 },
-            { status: 502 },
-          );
-        }
-      }
-
-      if (typeof parsed1 !== "object" || parsed1 === null) {
-        return NextResponse.json(
-          { ok: false, error: "AI retry response was not an object", raw: cleaned1 },
-          { status: 502 },
-        );
-      }
-
-      const second = parseResultObject(parsed1 as Record<string, unknown>, augmentedExisting, existingVisibilityRules);
+      const second = parseResultObject(toolInput1, augmentedExisting, existingQuestions);
       known = knownFieldIdSet(augmentedExisting, second.newFields);
       orphans = collectOrphanFieldIds(second.questions, known);
 
@@ -567,7 +631,6 @@ export async function POST(req: Request) {
         newFields: mergeFieldsById(firstPass.newFields, repairFields, second.newFields),
         rawFieldsLen: second.rawFieldsLen,
         rawQuestionsLen: second.rawQuestionsLen,
-        rawVisLen: second.rawVisLen,
       };
     }
 
@@ -575,10 +638,8 @@ export async function POST(req: Request) {
       newFields: parsed.newFields.length,
       questions: parsed.questions.length,
       deletedQuestionIds: parsed.deletedQuestionIds,
-      visibilityRules: parsed.visibilityRules.length,
       droppedFields: parsed.rawFieldsLen - parsed.newFields.length,
       droppedQuestions: parsed.rawQuestionsLen - parsed.questions.length,
-      droppedVisRules: parsed.rawVisLen - parsed.visibilityRules.length,
     });
 
     const violations = parsed.questions.filter((q) => q.fieldIds.length > maxFieldsPerQuestion);
@@ -597,7 +658,6 @@ export async function POST(req: Request) {
       newFields: parsed.newFields,
       questions: parsed.questions,
       deletedQuestionIds: parsed.deletedQuestionIds,
-      visibilityRules: parsed.visibilityRules,
     } satisfies GenerateFieldsResponse);
   } catch (err) {
     if (err instanceof ClaudeApiError) {

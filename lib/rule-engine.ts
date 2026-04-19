@@ -8,6 +8,10 @@ function satisfies(
   target: string,
   value_kind: LandlordField["value_kind"],
 ): boolean {
+  // Value-less operators apply uniformly across all kinds
+  if (operator === "is_empty") return actual.trim() === "";
+  if (operator === "is_not_empty") return actual.trim() !== "";
+
   if (value_kind === "number") {
     const a = Number(actual);
     const t = Number(target);
@@ -44,6 +48,7 @@ function satisfies(
   switch (operator) {
     case "==": return actual.toLowerCase() === target.toLowerCase();
     case "!=": return actual.toLowerCase() !== target.toLowerCase();
+    case "contains": return actual.toLowerCase().includes(target.toLowerCase());
   }
 
   return true;

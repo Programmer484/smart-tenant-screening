@@ -60,6 +60,8 @@ export type PropertyRecord = {
   ai_instructions: AiInstructions;
   /** AI + UI cap for how many fields one question may collect */
   max_fields_per_question: number;
+  /** When set, applicant-facing chat and share link are allowed. Omitted/null = draft only. */
+  published_at?: string | null;
   created_at: string;
   updated_at: string;
 };

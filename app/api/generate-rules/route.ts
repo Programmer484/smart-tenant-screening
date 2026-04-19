@@ -1,12 +1,87 @@
 import { NextResponse } from "next/server";
-import type { LandlordField } from "@/lib/landlord-field";
+import { FIELD_VALUE_KINDS, type LandlordField } from "@/lib/landlord-field";
 import {
   type LandlordRule,
   normalizeRulesList,
   OPERATORS_BY_KIND,
   validateRule,
 } from "@/lib/landlord-rule";
-import { callClaude, ClaudeApiError, extractText, stripCodeFences } from "@/lib/anthropic";
+import { callClaude, ClaudeApiError, extractToolUse } from "@/lib/anthropic";
+
+const FIELD_INPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    id: {
+      type: "string",
+      pattern: "^[a-z][a-z0-9_]*$",
+      description: "snake_case identifier; must start with a letter",
+    },
+    label: { type: "string" },
+    value_kind: { type: "string", enum: [...FIELD_VALUE_KINDS] },
+    options: { type: "array", items: { type: "string" } },
+  },
+  required: ["id", "label", "value_kind"],
+} as const;
+
+const CONDITION_INPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    fieldId: { type: "string" },
+    operator: { type: "string" },
+    value: {
+      type: "string",
+      description: "Boolean values must be the literal strings 'true' or 'false'",
+    },
+  },
+  required: ["fieldId", "operator"],
+} as const;
+
+const NEW_RULE_SCHEMA = {
+  type: "object",
+  properties: {
+    kind: { type: "string", enum: ["reject", "require"] },
+    conditions: {
+      type: "array",
+      minItems: 1,
+      items: CONDITION_INPUT_SCHEMA,
+    },
+  },
+  required: ["kind", "conditions"],
+} as const;
+
+const MODIFIED_RULE_SCHEMA = {
+  type: "object",
+  properties: {
+    id: { type: "string", description: "Existing rule id from EXISTING RULES" },
+    kind: { type: "string", enum: ["reject", "require"] },
+    conditions: {
+      type: "array",
+      minItems: 1,
+      items: CONDITION_INPUT_SCHEMA,
+    },
+  },
+  required: ["id", "kind", "conditions"],
+} as const;
+
+const PROPOSE_TOOL = {
+  name: "propose_rules",
+  description:
+    "Submit screening rule additions, modifications, deletions, and any newly required schema fields.",
+  input_schema: {
+    type: "object",
+    properties: {
+      newRules: { type: "array", items: NEW_RULE_SCHEMA },
+      modifiedRules: { type: "array", items: MODIFIED_RULE_SCHEMA },
+      deletedRuleIds: { type: "array", items: { type: "string" } },
+      newFields: {
+        type: "array",
+        items: FIELD_INPUT_SCHEMA,
+        description: "Fields the rules need that are not yet in Available fields",
+      },
+    },
+    required: ["newRules", "modifiedRules", "deletedRuleIds", "newFields"],
+  },
+} as const;
 
 function buildSystemPrompt(fields: LandlordField[], existingRules: LandlordRule[]): string {
   const fieldDescriptions = fields
@@ -42,34 +117,19 @@ function buildSystemPrompt(fields: LandlordField[], existingRules: LandlordRule[
 
   return `You are a rental application assistant. Given a property description and a list of applicant fields, generate screening rules.
 
+You MUST respond by calling the "${PROPOSE_TOOL.name}" tool. Do not write any prose; the tool input is the entire response.
+
 There are two types of rules:
 1. "reject" — instant rejection. If the condition evaluates to true, the applicant is rejected.
    Example: reject if smoking == true, reject if monthly_income < 3000.
 2. "require" — acceptance profile. The applicant must match AT LEAST ONE "require" rule to pass.
    Use these for complex eligibility criteria where multiple valid profiles exist.
 
-Return ONLY a valid JSON object — no explanation, no markdown, no code fences:
-{
-  "newRules": [...],
-  "modifiedRules": [...],
-  "deletedRuleIds": ["id1", "id2"],
-  "newFields": [...]
-}
-
-"newRules": array of new rule objects. Each must have:
-  - "kind": either "reject" or "require"
-  - "conditions": an array of condition objects, each with "fieldId", "operator", "value"
-
-"modifiedRules": array of updated rule objects. If the user asks to change an EXISTING RULE, return it here.
-  - MUST include the original "id" from the EXISTING RULES list.
-  - MUST include the updated "kind" and "conditions" arrays.
-
-"deletedRuleIds": array of string IDs of EXISTING RULES to completely remove, if requested.
-
-"newFields": array of fields you NEED for the rules but which are NOT in the available fields list below.
-  First, define the most natural human-facing label. Then, derive a concise, descriptive snake_case ID from that label.
-  Each: { "id": "snake_case_id", "label": "Human-readable label", "value_kind": "text|number|boolean|date|enum" }
-  ONLY include missing fields. If all needed fields exist, return an empty array.
+Tool input fields:
+- "newRules": new rule objects. Each has "kind" ("reject" | "require") and "conditions" (each with "fieldId", "operator", "value").
+- "modifiedRules": updated rule objects. MUST include the original "id" from EXISTING RULES, plus updated "kind" and "conditions".
+- "deletedRuleIds": IDs of EXISTING RULES to completely remove, if requested.
+- "newFields": fields you NEED for the rules but which are NOT in Available fields. First pick the natural human-facing label, then derive a snake_case id. Only include fields that are actually missing.
 
 Available fields:
 ${fieldDescriptions}
@@ -78,9 +138,9 @@ ${existingBlock}
 STRICT RULES:
 - ONLY generate rules for constraints explicitly stated in the property description.
 - Do NOT invent or assume constraints that are not mentioned.
-- If a rule requires a field that doesn't exist yet, add it to "missingFields" and STILL include the rule (it will be validated separately).
+- If a rule requires a field that doesn't exist yet, add it to "newFields" and STILL include the rule (it will be validated separately).
 - Do NOT duplicate any existing rules listed above.
-- If no rules need to be added, modified, or deleted, return empty arrays.`;
+- If no changes are needed, call the tool with all four arrays empty.`;
 }
 
 function generateId() {
@@ -168,50 +228,15 @@ export async function POST(req: Request) {
     : [];
 
   try {
-    const response = await callClaude(key, {
-      system: buildSystemPrompt(fields, existingRules),
-      messages: [{ role: "user", content: description }],
-    });
+    const first = await callProposeRulesTool(key, fields, existingRules, description);
 
-    const raw = extractText(response);
-    const cleaned = stripCodeFences(raw);
+    const newRulesArray = first.newRules;
+    const modifiedRulesArray = first.modifiedRules;
+    const deletedRuleIds = first.deletedRuleIds;
+    const missingFields = first.newFields;
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch {
-      return NextResponse.json({ error: "AI returned invalid JSON", raw: cleaned }, { status: 502 });
-    }
-
-    // Support both new object format and legacy array format
-    let newRulesArray: unknown[] = [];
-    let modifiedRulesArray: unknown[] = [];
-    let deletedRuleIds: string[] = [];
-    let missingFields: { id: string; label: string; value_kind: string }[] = [];
-
-    if (Array.isArray(parsed)) {
-      newRulesArray = parsed;
-    } else if (typeof parsed === "object" && parsed !== null) {
-      const obj = parsed as Record<string, unknown>;
-      newRulesArray = Array.isArray(obj.newRules) ? obj.newRules : (Array.isArray(obj.rules) ? obj.rules : []);
-      modifiedRulesArray = Array.isArray(obj.modifiedRules) ? obj.modifiedRules : [];
-      deletedRuleIds = Array.isArray(obj.deletedRuleIds) ? obj.deletedRuleIds.filter((x): x is string => typeof x === "string") : [];
-      
-      const rawNewFields = Array.isArray(obj.newFields) ? obj.newFields : (Array.isArray(obj.missingFields) ? obj.missingFields : []);
-      if (rawNewFields.length > 0) {
-        missingFields = (rawNewFields as unknown[]).filter(
-          (x): x is { id: string; label: string; value_kind: string } =>
-            typeof x === "object" && x !== null &&
-            typeof (x as any).id === "string" &&
-            typeof (x as any).label === "string"
-        );
-      }
-    } else {
-      return NextResponse.json({ error: "AI response was not valid", raw: cleaned }, { status: 502 });
-    }
-
-    // If missing fields were identified, make a second call with augmented field list
-    // so the LLM can reliably generate rules with all fields available
+    // If the first call announced new fields, re-call with the augmented field
+    // list so it can use them in conditions with full operator/value validation.
     if (missingFields.length > 0) {
       const augmentedFields: LandlordField[] = [
         ...fields,
@@ -222,50 +247,31 @@ export async function POST(req: Request) {
         } as LandlordField)),
       ];
 
-      const response2 = await callClaude(key, {
-        system: buildSystemPrompt(augmentedFields, existingRules),
-        messages: [{ role: "user", content: description }],
-      });
-
-      const raw2 = extractText(response2);
-      const cleaned2 = stripCodeFences(raw2);
-
-      let parsed2: unknown;
       try {
-        parsed2 = JSON.parse(cleaned2);
+        const second = await callProposeRulesTool(key, augmentedFields, existingRules, description);
+        const newRules = second.newRules
+          .map((v) => parseGeneratedRule(v, augmentedFields, false))
+          .filter((r): r is LandlordRule => r !== null);
+        const modifiedRules = second.modifiedRules
+          .map((v) => parseGeneratedRule(v, augmentedFields, false))
+          .filter((r): r is LandlordRule => r !== null);
+        return NextResponse.json({
+          newRules,
+          modifiedRules,
+          deletedRuleIds: second.deletedRuleIds.length > 0 ? second.deletedRuleIds : deletedRuleIds,
+          newFields: missingFields,
+        });
       } catch {
-        // Fall back to first-call rules if second call fails to parse
+        // If the second call fails, fall back to first-call rules (allow missing fields).
         const newRules = newRulesArray.map((v) => parseGeneratedRule(v, fields, true)).filter((r): r is LandlordRule => r !== null);
         const modifiedRules = modifiedRulesArray.map((v) => parseGeneratedRule(v, fields, true)).filter((r): r is LandlordRule => r !== null);
         return NextResponse.json({ newRules, modifiedRules, deletedRuleIds, newFields: missingFields });
       }
-
-      let newRulesArray2: unknown[] = [];
-      let modifiedRulesArray2: unknown[] = [];
-      let deletedRuleIds2: string[] = deletedRuleIds;
-
-      if (Array.isArray(parsed2)) {
-        newRulesArray2 = parsed2;
-      } else if (typeof parsed2 === "object" && parsed2 !== null) {
-        const obj2 = parsed2 as Record<string, unknown>;
-        newRulesArray2 = Array.isArray(obj2.newRules) ? obj2.newRules : (Array.isArray(obj2.rules) ? obj2.rules : []);
-        modifiedRulesArray2 = Array.isArray(obj2.modifiedRules) ? obj2.modifiedRules : [];
-        if (Array.isArray(obj2.deletedRuleIds)) {
-          deletedRuleIds2 = obj2.deletedRuleIds.filter((x): x is string => typeof x === "string");
-        }
-      }
-
-      const newRules = newRulesArray2.map((v) => parseGeneratedRule(v, augmentedFields, false)).filter((r): r is LandlordRule => r !== null);
-      const modifiedRules = modifiedRulesArray2.map((v) => parseGeneratedRule(v, augmentedFields, false)).filter((r): r is LandlordRule => r !== null);
-
-      return NextResponse.json({ newRules, modifiedRules, deletedRuleIds: deletedRuleIds2, newFields: missingFields });
     }
 
-    // No missing fields — use first-call results directly
     const newRules = newRulesArray
       .map((v) => parseGeneratedRule(v, fields, false))
       .filter((r): r is LandlordRule => r !== null);
-      
     const modifiedRules = modifiedRulesArray
       .map((v) => parseGeneratedRule(v, fields, false))
       .filter((r): r is LandlordRule => r !== null);
@@ -277,4 +283,51 @@ export async function POST(req: Request) {
     }
     throw err;
   }
+}
+
+type ProposeRulesToolInput = {
+  newRules: unknown[];
+  modifiedRules: unknown[];
+  deletedRuleIds: string[];
+  newFields: { id: string; label: string; value_kind: string }[];
+};
+
+async function callProposeRulesTool(
+  key: string,
+  fields: LandlordField[],
+  existingRules: LandlordRule[],
+  description: string,
+): Promise<ProposeRulesToolInput> {
+  const response = await callClaude(key, {
+    system: buildSystemPrompt(fields, existingRules),
+    messages: [{ role: "user", content: description }],
+    tools: [PROPOSE_TOOL as unknown as { name: string; description: string; input_schema: Record<string, unknown> }],
+    tool_choice: { type: "tool", name: PROPOSE_TOOL.name },
+  });
+
+  const input = extractToolUse<Record<string, unknown>>(response, PROPOSE_TOOL.name);
+  if (!input) {
+    throw new ClaudeApiError(`Model did not invoke ${PROPOSE_TOOL.name} tool`, 502);
+  }
+
+  return {
+    newRules: Array.isArray(input.newRules) ? input.newRules : [],
+    modifiedRules: Array.isArray(input.modifiedRules) ? input.modifiedRules : [],
+    deletedRuleIds: Array.isArray(input.deletedRuleIds)
+      ? input.deletedRuleIds.filter((x): x is string => typeof x === "string")
+      : [],
+    newFields: Array.isArray(input.newFields)
+      ? (input.newFields as unknown[]).filter(
+          (x): x is { id: string; label: string; value_kind: string } => {
+            if (typeof x !== "object" || x === null) return false;
+            const o = x as Record<string, unknown>;
+            return (
+              typeof o.id === "string" &&
+              typeof o.label === "string" &&
+              typeof o.value_kind === "string"
+            );
+          },
+        )
+      : [],
+  };
 }

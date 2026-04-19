@@ -65,7 +65,7 @@ export default function ApplicantsPage() {
   const [chatLoading, setChatLoading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
-  const [propertyContext, setPropertyContext] = useState<{ id: string; title: string } | null>(null);
+  const [propertyContext, setPropertyContext] = useState<{ id: string; title: string; published: boolean } | null>(null);
 
   const propertyId = typeof window !== "undefined"
     ? new URLSearchParams(window.location.search).get("property")
@@ -81,8 +81,16 @@ export default function ApplicantsPage() {
 
       if (propertyId) {
         query = query.eq("property_id", propertyId);
-        supabase.from("properties").select("id,title").eq("id", propertyId).single()
-          .then(({ data }) => { if (data) setPropertyContext({ id: data.id, title: data.title }); });
+        supabase.from("properties").select("id,title,published_at").eq("id", propertyId).single()
+          .then(({ data }) => {
+            if (data) {
+              setPropertyContext({
+                id: data.id,
+                title: data.title,
+                published: !!data.published_at,
+              });
+            }
+          });
       }
 
       const { data, error } = await query;
@@ -95,6 +103,10 @@ export default function ApplicantsPage() {
 
   async function copyChatLink() {
     if (!propertyContext) return;
+    if (!propertyContext.published) {
+      toast.error("Publish this property before sharing the applicant chat link.");
+      return;
+    }
     const url = `${window.location.origin}/chat/${propertyContext.id}`;
     await navigator.clipboard.writeText(url);
     toast.success("Chat link copied");

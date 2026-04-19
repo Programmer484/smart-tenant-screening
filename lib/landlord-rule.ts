@@ -5,12 +5,15 @@ import type { FieldValueKind, LandlordField } from "./landlord-field";
  * The rule engine evaluates these deterministically — no AI involvement.
  */
 export const OPERATORS_BY_KIND: Record<FieldValueKind, readonly string[]> = {
-  number: ["==", "!=", ">", ">=", "<", "<="],
-  boolean: ["=="],
-  text: ["==", "!="],
-  date: ["==", "!=", ">", ">=", "<", "<="],
-  enum: ["==", "!="],
+  number: ["==", "!=", ">", ">=", "<", "<=", "is_empty", "is_not_empty"],
+  boolean: ["==", "is_empty", "is_not_empty"],
+  text: ["==", "!=", "contains", "is_empty", "is_not_empty"],
+  date: ["==", "!=", ">", ">=", "<", "<=", "is_empty", "is_not_empty"],
+  enum: ["==", "!=", "is_empty", "is_not_empty"],
 };
+
+/** Operators that evaluate against the answer alone — no comparison value needed. */
+export const VALUELESS_OPERATORS: ReadonlySet<string> = new Set(["is_empty", "is_not_empty"]);
 
 export const OPERATOR_LABELS: Record<string, string> = {
   "==": "equals",
@@ -19,6 +22,9 @@ export const OPERATOR_LABELS: Record<string, string> = {
   ">=": "greater than or equal to",
   "<": "less than",
   "<=": "less than or equal to",
+  "contains": "contains",
+  "is_empty": "is empty",
+  "is_not_empty": "is not empty",
 };
 
 const DATE_OPERATOR_LABELS: Record<string, string> = {
@@ -28,6 +34,8 @@ const DATE_OPERATOR_LABELS: Record<string, string> = {
   ">=": "is on or after",
   "<": "is before",
   "<=": "is on or before",
+  "is_empty": "is empty",
+  "is_not_empty": "is not empty",
 };
 
 export function operatorLabel(op: string, kind?: FieldValueKind): string {
@@ -42,8 +50,9 @@ export type RuleCondition = {
   value: string;
 };
 
-/** What kind of screening rule this row is (stored as `kind` in JSON). */
-export type RuleKind = "reject" | "ask" | "require";
+/** Screening rule kinds. Field visibility (formerly "ask") now lives on the
+ *  Question itself via `parentQuestionId` + `trigger` — see lib/question.ts. */
+export type RuleKind = "reject" | "require";
 
 /** @deprecated Use {@link RuleKind} */
 export type RuleAction = RuleKind;
@@ -51,38 +60,24 @@ export type RuleAction = RuleKind;
 export type LandlordRule = {
   /** Unique id for this rule row */
   id: string;
-  /** Discriminator: reject / require (eligibility) or ask (field visibility). */
+  /** reject (instant fail) or require (acceptance profile, OR'd across rules) */
   kind: RuleKind;
-  /** When this is a field-visibility rule: which field’s question it applies to */
-  targetFieldId?: string;
   /** Evaluated with AND logic */
   conditions: RuleCondition[];
 };
 
-/**
- * JSON value for field-visibility rules (when to show a field’s question). Kept as `"ask"` for stored data.
- */
-export const RULE_KIND_FIELD_VISIBILITY = "ask" as const satisfies RuleKind;
-
-/** @deprecated Use {@link RULE_KIND_FIELD_VISIBILITY} */
-export const RULE_ACTION_FIELD_VISIBILITY = RULE_KIND_FIELD_VISIBILITY;
-
-/** Rules that gate whether a field is included in the interview. */
-export function isFieldVisibilityRule(rule: LandlordRule): boolean {
-  return rule.kind === RULE_KIND_FIELD_VISIBILITY;
-}
-
-/** Normalize a rule object from DB/API (supports legacy `action` key). */
+/** Normalize a rule object from DB/API (supports legacy `action` key).
+ *  Legacy `kind: "ask"` field-visibility rules are discarded — visibility now
+ *  lives on the Question (parentQuestionId + trigger). */
 export function normalizeLandlordRule(raw: unknown): LandlordRule | null {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
-  const kind = (r.kind ?? r.action) as RuleKind | undefined;
-  if (kind !== "reject" && kind !== "require" && kind !== "ask") return null;
+  const kind = (r.kind ?? r.action) as string | undefined;
+  if (kind !== "reject" && kind !== "require") return null;
   if (!Array.isArray(r.conditions)) return null;
   return {
     id: typeof r.id === "string" ? r.id : "",
     kind,
-    targetFieldId: typeof r.targetFieldId === "string" ? r.targetFieldId : undefined,
     conditions: r.conditions as LandlordRule["conditions"],
   };
 }
@@ -91,7 +86,7 @@ function generateCondId(): string {
   return Math.random().toString(36).slice(2, 9);
 }
 
-/** Normalize an array of rules from storage (legacy `action`, legacy single-condition rows). */
+/** Normalize an array of rules from storage. Drops legacy `kind: "ask"` rows. */
 export function normalizeRulesList(input: unknown): LandlordRule[] {
   if (!Array.isArray(input)) return [];
   const out: LandlordRule[] = [];
@@ -141,6 +136,7 @@ export function validateCondition(
   const ops = OPERATORS_BY_KIND[field.value_kind];
   if (!ops) return `Invalid field type "${field.value_kind}"`;
   if (!ops.includes(cond.operator)) return "Invalid operator for this field type";
+  if (VALUELESS_OPERATORS.has(cond.operator)) return null;
   if (!cond.value.trim()) return "Value is required";
   if (field.value_kind === "number" && isNaN(Number(cond.value))) {
     return "Value must be a number";
@@ -155,13 +151,37 @@ export function validateRule(
   rule: LandlordRule,
   fields: LandlordField[],
 ): string | null {
-  if (isFieldVisibilityRule(rule) && !rule.targetFieldId) {
-    return "Choose which field this visibility rule applies to";
-  }
   if (rule.conditions.length === 0) return "Add at least one condition";
   for (const c of rule.conditions) {
     const err = validateCondition(c, fields);
     if (err) return err;
+    if (c.fieldId && !fields.find((f) => f.id === c.fieldId)) {
+      return "References a missing field";
+    }
+  }
+  return null;
+}
+
+export function countInvalidRuleConditions(rules: LandlordRule[], fields: LandlordField[]): number {
+  let count = 0;
+  for (const r of rules) {
+    for (const c of r.conditions) {
+      if (validateCondition(c, fields) || (c.fieldId && !fields.find((f) => f.id === c.fieldId))) {
+        count++;
+      }
+    }
+  }
+  return count;
+}
+
+/** First invalid condition id in rule list order (matches Rules UI / `-error` anchor ids). */
+export function getFirstInvalidRuleConditionId(rules: LandlordRule[], fields: LandlordField[]): string | null {
+  for (const r of rules) {
+    for (const c of r.conditions) {
+      if (validateCondition(c, fields) || (c.fieldId && !fields.find((f) => f.id === c.fieldId))) {
+        return c.id;
+      }
+    }
   }
   return null;
 }

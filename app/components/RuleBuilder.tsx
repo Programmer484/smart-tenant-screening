@@ -1,11 +1,10 @@
 "use client";
 
-import { useId } from "react";
 import type { LandlordField } from "@/lib/landlord-field";
 import {
   OPERATORS_BY_KIND,
+  VALUELESS_OPERATORS,
   operatorLabel,
-  isFieldVisibilityRule,
   type LandlordRule,
   type RuleCondition,
   defaultOperatorForKind,
@@ -33,6 +32,7 @@ function describeCond(cond: RuleCondition, fields: LandlordField[]): string {
   const field = fields.find((f) => f.id === cond.fieldId);
   const label = field?.label || cond.fieldId || "?";
   const op = operatorLabel(cond.operator, field?.value_kind);
+  if (VALUELESS_OPERATORS.has(cond.operator)) return `${label} ${op}`;
   const val = field?.value_kind === "boolean"
     ? (cond.value === "true" ? "Yes" : "No")
     : cond.value || "…";
@@ -58,10 +58,13 @@ function RuleConditionRow({
   onDelete: () => void;
   canDelete: boolean;
 }) {
-  const uid = useId();
   const field = fields.find((f) => f.id === cond.fieldId);
-  const error = cond.fieldId ? validateCondition(cond, fields) : null;
+  const error = validateCondition(cond, fields);
   const operators = field ? (OPERATORS_BY_KIND[field.value_kind] ?? ["=="]) : ["=="];
+  // "Broken" = the condition points at a field id that no longer exists. The
+  // <select> below would otherwise silently swap to its first option on next
+  // edit, which is exactly how stale rules quietly change behaviour.
+  const isBroken = !!cond.fieldId && !field;
 
   function handleFieldChange(fieldId: string) {
     const f = fields.find((x) => x.id === fieldId);
@@ -75,71 +78,118 @@ function RuleConditionRow({
   }
 
   return (
-    <div className="flex flex-col gap-1 w-full">
-      <div className="flex flex-wrap items-center gap-2 w-full">
+    <div className="flex min-w-0 w-full flex-col gap-1">
+      <div className="flex min-w-0 w-full flex-wrap items-start gap-2">
         {/* Field selector */}
         {fields.length === 0 ? (
-          <p className="text-xs text-foreground/40 italic flex-1 min-w-[120px]">
+          <p className="min-w-0 flex-1 basis-[120px] text-xs text-foreground/40 italic py-2">
             Add questions first
           </p>
         ) : (
-          <select
-            value={cond.fieldId}
-            onChange={(e) => handleFieldChange(e.target.value)}
-            className="flex-1 min-w-[120px] rounded-lg border border-foreground/10 bg-background px-3 py-2 text-sm text-foreground focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/15"
-          >
-            {fields.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.label || f.id}
-              </option>
-            ))}
-          </select>
+          <div className="flex-1 basis-[120px] flex flex-col gap-1 min-w-0 max-w-full">
+            <select
+              value={cond.fieldId}
+              onChange={(e) => handleFieldChange(e.target.value)}
+              aria-invalid={!!isBroken}
+              aria-describedby={isBroken ? `${cond.id}-error` : undefined}
+              className={`w-full rounded-lg border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 ${
+                isBroken
+                  ? "border-red-300 focus:border-red-400 focus:ring-red-200"
+                  : "border-foreground/10 focus:border-foreground/25 focus:ring-foreground/15"
+              }`}
+            >
+              {isBroken && (
+                <option value={cond.fieldId}>
+                  ⚠ Missing field: {cond.fieldId}
+                </option>
+              )}
+              {fields.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.label || f.id}
+                </option>
+              ))}
+            </select>
+            {isBroken && (
+              <p id={`${cond.id}-error`} className="text-[11px] font-medium text-red-500">
+                Field <code className="font-mono">{cond.fieldId}</code> no longer exists.
+              </p>
+            )}
+          </div>
         )}
 
         {/* Operator selector */}
-        <select
-          value={cond.operator}
-          onChange={(e) => onChange({ ...cond, operator: e.target.value })}
-          className="w-32 rounded-lg border border-foreground/10 bg-background px-3 py-2 text-sm text-foreground focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/15"
-        >
-          {operators.map((op) => (
-            <option key={op} value={op}>
-              {operatorLabel(op, field?.value_kind)}
-            </option>
-          ))}
-        </select>
-
-        {/* Value input */}
-        {field?.value_kind === "boolean" ? (
+        <div className="w-32 shrink-0 flex flex-col gap-1">
           <select
-            value={cond.value}
-            onChange={(e) => onChange({ ...cond, value: e.target.value })}
-            className="w-24 rounded-lg border border-foreground/10 bg-background px-3 py-2 text-sm text-foreground focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/15"
+            value={cond.operator}
+            onChange={(e) => onChange({ ...cond, operator: e.target.value })}
+            className="w-full rounded-lg border border-foreground/10 bg-background px-3 py-2 text-sm text-foreground focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/15"
           >
-            <option value="true">Yes</option>
-            <option value="false">No</option>
-          </select>
-        ) : field?.value_kind === "enum" ? (
-          <select
-            value={cond.value}
-            onChange={(e) => onChange({ ...cond, value: e.target.value })}
-            className="w-32 rounded-lg border border-foreground/10 bg-background px-3 py-2 text-sm text-foreground focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/15"
-          >
-            <option value="">Select…</option>
-            {(field.options ?? []).map((opt) => (
-              <option key={opt} value={opt}>
-                {opt}
+            {operators.map((op) => (
+              <option key={op} value={op}>
+                {operatorLabel(op, field?.value_kind)}
               </option>
             ))}
           </select>
-        ) : (
-          <input
-            type={field?.value_kind === "number" ? "number" : field?.value_kind === "date" ? "date" : "text"}
-            value={cond.value}
-            onChange={(e) => onChange({ ...cond, value: e.target.value })}
-            placeholder={field?.value_kind === "number" ? "0" : "Enter a value"}
-            className="w-32 rounded-lg border border-foreground/10 bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-foreground/35 focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/15"
-          />
+        </div>
+
+        {/* Value input — omitted for is_empty / is_not_empty (operator alone is the test) */}
+        {VALUELESS_OPERATORS.has(cond.operator) ? null : (
+          <div className="flex-1 min-w-[7rem] max-w-full flex flex-col gap-1">
+            {field?.value_kind === "boolean" ? (
+              <select
+                value={cond.value}
+                onChange={(e) => onChange({ ...cond, value: e.target.value })}
+                aria-invalid={!!error && !isBroken}
+                aria-describedby={error && !isBroken ? `${cond.id}-error` : undefined}
+                className={`w-full rounded-lg border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 ${
+                  error && !isBroken
+                    ? "border-red-300 focus:border-red-400 focus:ring-red-200"
+                    : "border-foreground/10 focus:border-foreground/25 focus:ring-foreground/15"
+                }`}
+              >
+                <option value="true">Yes</option>
+                <option value="false">No</option>
+              </select>
+            ) : field?.value_kind === "enum" ? (
+              <select
+                value={cond.value}
+                onChange={(e) => onChange({ ...cond, value: e.target.value })}
+                aria-invalid={!!error && !isBroken}
+                aria-describedby={error && !isBroken ? `${cond.id}-error` : undefined}
+                className={`w-full rounded-lg border bg-background px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-1 ${
+                  error && !isBroken
+                    ? "border-red-300 focus:border-red-400 focus:ring-red-200"
+                    : "border-foreground/10 focus:border-foreground/25 focus:ring-foreground/15"
+                }`}
+              >
+                <option value="">Select…</option>
+                {(field.options ?? []).map((opt) => (
+                  <option key={opt} value={opt}>
+                    {opt}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type={field?.value_kind === "number" ? "number" : field?.value_kind === "date" ? "date" : "text"}
+                value={cond.value}
+                onChange={(e) => onChange({ ...cond, value: e.target.value })}
+                placeholder={field?.value_kind === "number" ? "0" : "Enter a value"}
+                aria-invalid={!!error && !isBroken}
+                aria-describedby={error && !isBroken ? `${cond.id}-error` : undefined}
+                className={`w-full rounded-lg border bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-foreground/35 focus:outline-none focus:ring-1 ${
+                  error && !isBroken
+                    ? "border-red-300 focus:border-red-400 focus:ring-red-200"
+                    : "border-foreground/10 focus:border-foreground/25 focus:ring-foreground/15"
+                }`}
+              />
+            )}
+            {!isBroken && error && (
+              <p id={`${cond.id}-error`} className="text-[11px] font-medium text-red-500">
+                {error}
+              </p>
+            )}
+          </div>
         )}
 
         {/* Delete condition button */}
@@ -148,7 +198,7 @@ function RuleConditionRow({
             type="button"
             onClick={onDelete}
             aria-label="Remove requirement"
-            className="shrink-0 p-1.5 text-foreground/30 hover:text-red-500 transition-colors"
+            className="shrink-0 p-1.5 mt-1.5 text-foreground/30 hover:text-red-500 transition-colors"
           >
              <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
               <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -156,7 +206,6 @@ function RuleConditionRow({
           </button>
         )}
       </div>
-      {error && <p className="text-xs text-red-500">{error}</p>}
     </div>
   );
 }
@@ -182,14 +231,13 @@ export function RuleBuilder({
   isLast?: boolean;
   labelOverride?: string;
 }) {
-  const isGlobal = !isFieldVisibilityRule(rule);
-  const summary = describeRule(rule, fields);
+  void describeRule;
 
   return (
-    <div className={`flex gap-3 rounded-xl border ${isGlobal ? 'border-foreground/10 bg-background p-4 shadow-sm' : 'border-0 bg-transparent p-0'}`}>
+    <div className="flex min-w-0 w-full gap-3 rounded-xl border border-foreground/10 bg-background p-4 shadow-sm">
       {/* Reorder controls for global rules */}
       {onMoveUp && onMoveDown && (
-        <div className="flex flex-col items-center gap-0.5 pt-1 text-foreground/30">
+        <div className="flex shrink-0 flex-col items-center gap-0.5 pt-1 text-foreground/30">
           <button
             type="button"
             onClick={onMoveUp}
@@ -218,9 +266,9 @@ export function RuleBuilder({
       )}
 
       {/* Conditions */}
-      <div className="flex flex-1 flex-col gap-2">
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
         {(labelOverride || rule.kind === "reject") && (
-          <span className={`font-medium text-foreground/70 ${isGlobal ? "text-sm" : "text-xs"}`}>
+          <span className="text-sm font-medium text-foreground/70">
             {labelOverride || "Reject applicant if:"}
           </span>
         )}
@@ -264,14 +312,14 @@ export function RuleBuilder({
         </button>
       </div>
 
-      <div className="pt-0.5">
+      <div className="shrink-0 pt-0.5">
         <button
           type="button"
           onClick={onDelete}
           aria-label="Delete rule"
-          className={`shrink-0 rounded-lg transition-colors text-red-400/60 hover:bg-red-50 hover:text-red-500 ${isGlobal ? "p-1.5" : "p-1"}`}
+          className="shrink-0 rounded-lg p-1.5 text-red-400/60 transition-colors hover:bg-red-50 hover:text-red-500"
         >
-          <svg width={isGlobal ? "16" : "14"} height={isGlobal ? "16" : "14"} viewBox="0 0 16 16" fill="none">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <path d="M2 4h12M5 4V2.5A1.5 1.5 0 0 1 6.5 1h3A1.5 1.5 0 0 1 11 2.5V4m2 0-.75 9A1.5 1.5 0 0 1 10.75 14.5h-5.5A1.5 1.5 0 0 1 3.75 13L3 4" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
             <path d="M6.5 7v4M9.5 7v4" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
           </svg>

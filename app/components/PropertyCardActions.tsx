@@ -8,9 +8,12 @@ import { ConfirmDialog } from "./ConfirmDialog";
 export function PropertyCardActions({
   propertyId,
   propertyTitle,
+  isPublished = false,
 }: {
   propertyId: string;
   propertyTitle: string;
+  /** Applicant chat link is only valid after publish. */
+  isPublished?: boolean;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -29,6 +32,10 @@ export function PropertyCardActions({
 
   async function handleCopyLink() {
     setMenuOpen(false);
+    if (!isPublished) {
+      toast.error("Publish this property before sharing the applicant chat link.");
+      return;
+    }
     const url = `${window.location.origin}/chat/${propertyId}`;
     await navigator.clipboard.writeText(url);
     toast.success("Link copied to clipboard");

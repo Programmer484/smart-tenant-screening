@@ -19,6 +19,8 @@ type AnthropicBlock = {
   type: string;
   text?: string;
   input?: Record<string, unknown>;
+  name?: string;
+  id?: string;
 };
 
 type AnthropicResponse = {
@@ -74,10 +76,18 @@ export function extractText(response: AnthropicResponse): string {
   );
 }
 
-/** Strip markdown code fences that Claude sometimes adds despite instructions */
-export function stripCodeFences(raw: string): string {
-  return raw
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/, "")
-    .trim();
+/**
+ * Extract the input of a forced tool_use block from a Claude response.
+ * Returns null if the model did not call the expected tool (which should be
+ * impossible when `tool_choice` forces a specific tool, but we guard anyway).
+ */
+export function extractToolUse<T = Record<string, unknown>>(
+  response: AnthropicResponse,
+  toolName: string,
+): T | null {
+  const block = response.content?.find(
+    (b) => b.type === "tool_use" && b.name === toolName,
+  );
+  if (!block || !block.input) return null;
+  return block.input as T;
 }
