@@ -9,6 +9,7 @@ const KIND_BADGE_COLORS: Record<string, string> = {
   boolean: "bg-emerald-100 text-emerald-700",
   date: "bg-amber-100 text-amber-700",
   enum: "bg-purple-100 text-purple-700",
+  error: "bg-red-100 text-red-700",
 };
 
 export function FieldPickerPopover({
@@ -68,14 +69,22 @@ export function FieldPickerPopover({
   const visibleFields = useMemo(() => {
     const q = query.trim().toLowerCase();
     const selected = new Set(selectedIds);
+    
+    // Inject missing fields as error rows so they can be deselected
+    const missingIds = selectedIds.filter((id) => !fields.some((f) => f.id === id));
+    const allFields = [
+      ...fields,
+      ...missingIds.map((id) => ({ id, label: `Missing: ${id}`, value_kind: "error" as any })),
+    ];
+    
     const filtered = q
-      ? fields.filter(
+      ? allFields.filter(
           (f) =>
             f.label.toLowerCase().includes(q) ||
             f.id.toLowerCase().includes(q) ||
             f.value_kind.toLowerCase().includes(q),
         )
-      : fields;
+      : allFields;
     return [...filtered].sort((a, b) => {
       const aLocked = !selected.has(a.id) && (lockedFieldIds?.has(a.id) ?? false) ? 1 : 0;
       const bLocked = !selected.has(b.id) && (lockedFieldIds?.has(b.id) ?? false) ? 1 : 0;

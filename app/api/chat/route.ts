@@ -315,6 +315,7 @@ export async function POST(req: Request) {
   const ai = resolveAiInstructions(
     rec.aiInstructions as Partial<AiInstructions> | undefined,
   );
+  const isPreview = rec.preview === true;
 
   if (propertyId) {
     const db = createServiceClient();
@@ -327,7 +328,7 @@ export async function POST(req: Request) {
       console.error("[chat] published check", pubErr);
       return NextResponse.json({ error: "Could not verify listing." }, { status: 500 });
     }
-    if (!pubRow?.published_at) {
+    if (!pubRow?.published_at && !isPreview) {
       return NextResponse.json(
         { error: "This listing is not published yet." },
         { status: 403 },

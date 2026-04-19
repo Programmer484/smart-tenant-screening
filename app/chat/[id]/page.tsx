@@ -14,6 +14,7 @@ import {
 import type { LandlordField } from "@/lib/landlord-field";
 import { normalizeRulesList, type LandlordRule } from "@/lib/landlord-rule";
 import type { Question } from "@/lib/question";
+import { getActiveQuestionIds } from "@/lib/question-flow";
 
 type Role = "assistant" | "user";
 type Extraction = { fieldId: string; value: string };
@@ -79,6 +80,11 @@ export default function ChatPage() {
     new URLSearchParams(window.location.search).get("debug") === "1"
   );
 
+  const [isPreview] = useState(() =>
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("preview") === "1"
+  );
+
   const [restartDialogOpen, setRestartDialogOpen] = useState(false);
   const [listingUnpublished, setListingUnpublished] = useState(false);
 
@@ -125,6 +131,7 @@ export default function ChatPage() {
           messages: [{ role: "user", content: "(new conversation — very concisely introduce yourself and ask the first screening question)" }],
           sessionId: sid,
           propertyId: cfg.id,
+          preview: isPreview,
         }),
       });
       if (res.ok) {
@@ -157,7 +164,7 @@ export default function ChatPage() {
 
       const p = propRes.data as PropertyRecord;
 
-      if (!p.published_at) {
+      if (!p.published_at && !isPreview) {
         setListingUnpublished(true);
         setConfig({
           id: p.id,
@@ -271,6 +278,7 @@ export default function ChatPage() {
           messages: apiHistory,
           sessionId,
           propertyId: config.id,
+          preview: isPreview,
         }),
       });
 
@@ -357,8 +365,18 @@ export default function ChatPage() {
     await fetchGreeting(config, newSid);
   }
 
-  const answeredCount = Object.keys(answers).length;
-  const totalFields = config?.fields.length ?? 0;
+  const activeQuestionIds = config ? getActiveQuestionIds(config.questions, config.fields, answers) : new Set<string>();
+  let answeredQuestionsCount = 0;
+  if (config) {
+    for (const qId of activeQuestionIds) {
+      const q = config.questions.find((x) => x.id === qId);
+      if (q && q.fieldIds.length > 0 && q.fieldIds.every((fid) => answers[fid] !== undefined)) {
+        answeredQuestionsCount++;
+      }
+    }
+  }
+  const progressPercent = completed ? 100 : (activeQuestionIds.size > 0 ? (answeredQuestionsCount / activeQuestionIds.size) * 100 : 0);
+
   const hasLinks = config?.links.videoUrl || config?.links.bookingUrl;
 
   // Loading splash while config loads
@@ -467,11 +485,11 @@ export default function ChatPage() {
       </header>
 
       {/* Progress bar */}
-      {totalFields > 0 && (
+      {config && config.questions.length > 0 && (
         <div className="h-1 bg-black/5">
           <div
             className="h-full bg-teal-600 transition-all duration-500"
-            style={{ width: `${(answeredCount / totalFields) * 100}%` }}
+            style={{ width: `${progressPercent}%` }}
           />
         </div>
       )}

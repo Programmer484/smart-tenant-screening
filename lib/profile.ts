@@ -1,6 +1,5 @@
 /**
  * Profiles bundle fields + questions together for reuse across properties.
- * Replaces the old "shared fields" concept.
  *
  * A landlord can save a profile (e.g. "Standard Rental") and apply it
  * to any property, which copies the fields + questions into that property.

@@ -102,22 +102,7 @@ const PROPOSE_TOOL = {
   },
 } as const;
 
-const REPAIR_TOOL = {
-  name: "define_missing_fields",
-  description:
-    "Define schema definitions for the listed missing field IDs so they can be referenced by interview questions.",
-  input_schema: {
-    type: "object",
-    properties: {
-      newFields: {
-        type: "array",
-        minItems: 1,
-        items: FIELD_INPUT_SCHEMA,
-      },
-    },
-    required: ["newFields"],
-  },
-} as const;
+
 
 function log(label: string, data?: unknown) {
   if (!DEBUG) return;
@@ -133,7 +118,7 @@ function buildSystemPrompt(
   existingFields: { id: string; label: string; value_kind: string }[],
   existingQuestions: { id: string; text: string; fieldIds: string[]; parentQuestionId?: string; trigger?: QuestionTrigger }[],
   maxFieldsPerQuestion: number,
-  generationAttempt: 0 | 1,
+  strictFieldsMode: boolean,
 ): string {
   let prompt = `You are a rental application assistant. Given a landlord's prompt, generate the data FIELDS needed and the interview QUESTIONS to collect them.
 
@@ -155,8 +140,8 @@ RULES:
 - When UPDATING an existing question, return its FULL fieldIds list (existing + new). When ADDING a new question, use a new id starting with "q_".
 - If a question is being REPLACED or MERGED into another, include the old question's id in "deletedQuestionIds".
 - The total fieldIds per question must NOT exceed ${maxFieldsPerQuestion}. If an existing question would exceed this after merging, split: delete the old one and create new questions.
-- CRITICAL: Every field ID in every question's "fieldIds" array MUST either appear in EXISTING FIELDS below OR in your "newFields" output. Do not reference field IDs that are not defined.
-
+- CRITICAL: Every field ID in every question's "fieldIds" array MUST appear in EXISTING FIELDS below${strictFieldsMode ? "" : " OR in your \"newFields\" output"}. Do not reference field IDs that are not defined.
+${strictFieldsMode ? "- CRITICAL RESTRICTION: strictFieldsMode is ENABLED. You are FORBIDDEN from generating ANY new fields. The \"newFields\" array MUST be empty. You must ONLY use the fields provided in EXISTING FIELDS to construct your questions." : ""}
 CONDITIONAL FOLLOW-UPS (parentQuestionId + trigger):
 - A follow-up is asked only when its parent question's answer matches a condition (e.g. "ask pet_count only if has_pets is true").
 - To create one: include the follow-up in "questions" with parentQuestionId = the parent question's id, and trigger = { fieldId, operator, value } where fieldId MUST be one of the PARENT question's fieldIds.
@@ -177,11 +162,7 @@ Value kinds: ${JSON.stringify(FIELD_VALUE_KINDS)}
 If value_kind is "enum", include "options" with at least 2 distinct choices.
 If no changes are needed, call the tool with all three arrays empty.`;
 
-  if (generationAttempt === 1) {
-    prompt += `
 
-GENERATION ATTEMPT: 2 (retry). A previous pass referenced field IDs that were not in the schema; missing definitions were added to EXISTING FIELDS. Regenerate a complete, consistent proposal. Every "fieldIds" entry must match EXISTING FIELDS or "newFields".`;
-  }
 
   if (existingFields.length > 0) {
     prompt += `\n\nEXISTING FIELDS (do NOT duplicate):\n${existingFields.map((f) => `  - id: "${f.id}", label: "${f.label}", value_kind: "${f.value_kind}"`).join("\n")}`;
@@ -202,20 +183,7 @@ GENERATION ATTEMPT: 2 (retry). A previous pass referenced field IDs that were no
   return prompt;
 }
 
-function buildRepairFieldsPrompt(missingIds: string[]): string {
-  return `You are a rental application schema assistant. The interview generator referenced field IDs that are not yet defined in the database.
 
-You MUST respond by calling the "${REPAIR_TOOL.name}" tool with definitions for every missing field id below.
-
-Rules:
-- Include exactly one object per missing field id, using that EXACT "id" string (same spelling and casing).
-- Choose an appropriate value_kind and human-readable label from context.
-- If value_kind is "enum", include at least 2 options.
-- Value kinds allowed: ${JSON.stringify(FIELD_VALUE_KINDS)}
-
-Missing field ids to define:
-${missingIds.map((id) => `  - "${id}"`).join("\n")}`;
-}
 
 function parseGeneratedField(v: unknown): LandlordField | null {
   if (typeof v !== "object" || v === null) return null;
@@ -351,35 +319,7 @@ function sanitizeQuestionTriggers(
   return { questions: out, droppedTriggers };
 }
 
-function knownFieldIdSet(
-  existingFields: { id: string }[],
-  newFields: LandlordField[],
-): Set<string> {
-  const s = new Set<string>();
-  for (const f of existingFields) s.add(f.id);
-  for (const f of newFields) s.add(f.id);
-  return s;
-}
 
-function collectOrphanFieldIds(questions: Question[], known: Set<string>): string[] {
-  const out = new Set<string>();
-  for (const q of questions) {
-    for (const fid of q.fieldIds) {
-      if (!known.has(fid)) out.add(fid);
-    }
-  }
-  return [...out];
-}
-
-function mergeFieldsById(...lists: LandlordField[][]): LandlordField[] {
-  const map = new Map<string, LandlordField>();
-  for (const list of lists) {
-    for (const f of list) {
-      map.set(f.id, f);
-    }
-  }
-  return [...map.values()];
-}
 
 type ParsedGenerateResult = {
   newFields: LandlordField[];
@@ -458,59 +398,7 @@ async function callProposeTool(
   return input;
 }
 
-async function repairMissingFields(
-  key: string,
-  missingIds: string[],
-  description: string,
-  questionsSnapshot: Question[],
-): Promise<LandlordField[]> {
-  const system = buildRepairFieldsPrompt(missingIds);
-  const user = `Landlord instruction:\n${description}\n\nProposed questions that reference the missing ids (for context):\n${JSON.stringify(questionsSnapshot.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })), null, 2)}`;
 
-  const response = await callClaude(key, {
-    system,
-    messages: [{ role: "user", content: user }],
-    max_tokens: GENERATE_FIELDS_MAX_OUTPUT_TOKENS,
-    tools: [REPAIR_TOOL as unknown as { name: string; description: string; input_schema: Record<string, unknown> }],
-    tool_choice: { type: "tool", name: REPAIR_TOOL.name },
-  });
-  const input = extractToolUse<{ newFields?: unknown[] }>(response, REPAIR_TOOL.name);
-  if (!input) {
-    throw new Error(`Model did not invoke ${REPAIR_TOOL.name} tool`);
-  }
-
-  const raw = Array.isArray(input.newFields) ? input.newFields : [];
-  const fields = raw.map(parseGeneratedField).filter((x): x is LandlordField => x !== null);
-  const byId = new Map(fields.map((f) => [f.id, f]));
-  const missing: string[] = [];
-  for (const id of missingIds) {
-    if (!byId.has(id)) missing.push(id);
-  }
-  if (missing.length > 0) {
-    throw new Error(`Repair did not define all missing fields: ${missing.join(", ")}`);
-  }
-  return missingIds.map((id) => byId.get(id)!);
-}
-
-function toExistingRow(f: LandlordField): { id: string; label: string; value_kind: string } {
-  return { id: f.id, label: f.label, value_kind: f.value_kind };
-}
-
-function augmentExistingForRetry(
-  base: { id: string; label: string; value_kind: string }[],
-  ...extraFields: LandlordField[][]
-): { id: string; label: string; value_kind: string }[] {
-  const map = new Map<string, { id: string; label: string; value_kind: string }>();
-  for (const row of base) {
-    map.set(row.id, row);
-  }
-  for (const list of extraFields) {
-    for (const f of list) {
-      map.set(f.id, toExistingRow(f));
-    }
-  }
-  return [...map.values()];
-}
 
 export type GenerateFieldsResponse =
   | { ok: true; newFields: LandlordField[]; questions: Question[]; deletedQuestionIds: string[] }
@@ -539,6 +427,8 @@ export async function POST(req: Request) {
   const maxFieldsPerQuestion = typeof rec.maxFieldsPerQuestion === "number" && rec.maxFieldsPerQuestion >= 1
     ? rec.maxFieldsPerQuestion
     : DEFAULT_MAX_FIELDS_PER_QUESTION;
+
+  const strictFieldsMode = !!rec.strictFieldsMode;
 
   const existingFields: { id: string; label: string; value_kind: string }[] = Array.isArray(rec.existingFields)
     ? (rec.existingFields as unknown[]).filter(
@@ -570,7 +460,7 @@ export async function POST(req: Request) {
       existingFields,
       existingQuestions,
       maxFieldsPerQuestion,
-      0,
+      strictFieldsMode,
     );
 
     const toolInput0 = await callProposeTool(key, system0, description);
@@ -578,71 +468,17 @@ export async function POST(req: Request) {
 
     const firstPass = parseResultObject(toolInput0, existingFields, existingQuestions);
 
-    let parsed = firstPass;
-    let known = knownFieldIdSet(existingFields, parsed.newFields);
-    let orphans = collectOrphanFieldIds(parsed.questions, known);
 
-    if (orphans.length > 0) {
-      log("orphan field refs after attempt 0", orphans);
-      let repairFields: LandlordField[];
-      try {
-        repairFields = await repairMissingFields(key, orphans, description, parsed.questions);
-      } catch (e) {
-        log("field repair failed", (e as Error).message);
-        return NextResponse.json(
-          {
-            ok: false,
-            error: `Referenced unknown field ids with no schema: ${orphans.join(", ")}. Field repair failed: ${(e as Error).message}`,
-            orphanFieldIds: orphans,
-          } satisfies GenerateFieldsResponse,
-          { status: 422 },
-        );
-      }
-
-      const augmentedExisting = augmentExistingForRetry(existingFields, parsed.newFields, repairFields);
-      const system1 = buildSystemPrompt(
-        augmentedExisting,
-        existingQuestions,
-        maxFieldsPerQuestion,
-        1,
-      );
-
-      const toolInput1 = await callProposeTool(key, system1, description);
-      log("tool input (attempt 1)", toolInput1);
-
-      const second = parseResultObject(toolInput1, augmentedExisting, existingQuestions);
-      known = knownFieldIdSet(augmentedExisting, second.newFields);
-      orphans = collectOrphanFieldIds(second.questions, known);
-
-      if (orphans.length > 0) {
-        log("orphan field refs after attempt 1", orphans);
-        return NextResponse.json(
-          {
-            ok: false,
-            error: "Question generation still referenced unknown fields after repair and retry.",
-            orphanFieldIds: orphans,
-          } satisfies GenerateFieldsResponse,
-          { status: 422 },
-        );
-      }
-
-      parsed = {
-        ...second,
-        newFields: mergeFieldsById(firstPass.newFields, repairFields, second.newFields),
-        rawFieldsLen: second.rawFieldsLen,
-        rawQuestionsLen: second.rawQuestionsLen,
-      };
-    }
 
     log("parsed results", {
-      newFields: parsed.newFields.length,
-      questions: parsed.questions.length,
-      deletedQuestionIds: parsed.deletedQuestionIds,
-      droppedFields: parsed.rawFieldsLen - parsed.newFields.length,
-      droppedQuestions: parsed.rawQuestionsLen - parsed.questions.length,
+      newFields: firstPass.newFields.length,
+      questions: firstPass.questions.length,
+      deletedQuestionIds: firstPass.deletedQuestionIds,
+      droppedFields: firstPass.rawFieldsLen - firstPass.newFields.length,
+      droppedQuestions: firstPass.rawQuestionsLen - firstPass.questions.length,
     });
 
-    const violations = parsed.questions.filter((q) => q.fieldIds.length > maxFieldsPerQuestion);
+    const violations = firstPass.questions.filter((q) => q.fieldIds.length > maxFieldsPerQuestion);
     if (violations.length > 0) {
       log("maxFields violations", violations.map((q) => ({ id: q.id, fieldIds: q.fieldIds })));
       return NextResponse.json({
@@ -655,9 +491,9 @@ export async function POST(req: Request) {
     log("success");
     return NextResponse.json({
       ok: true,
-      newFields: parsed.newFields,
-      questions: parsed.questions,
-      deletedQuestionIds: parsed.deletedQuestionIds,
+      newFields: firstPass.newFields,
+      questions: firstPass.questions,
+      deletedQuestionIds: firstPass.deletedQuestionIds,
     } satisfies GenerateFieldsResponse);
   } catch (err) {
     if (err instanceof ClaudeApiError) {

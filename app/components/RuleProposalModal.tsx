@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import TextareaAutosize from "react-textarea-autosize";
 import type { LandlordField } from "@/lib/landlord-field";
 import {
   OPERATORS_BY_KIND,
@@ -220,10 +221,10 @@ function ProposalNode({
               </span>
               {originBadge ? <span className="shrink-0 pt-1">{originBadge}</span> : null}
               {editable ? (
-                <textarea
+                <TextareaAutosize
                   value={q.text}
                   disabled={skipped}
-                  rows={questionTextEditorRows(q.text)}
+                  minRows={1}
                   onChange={(e) => onUpdateQuestion(q.id, { text: e.target.value })}
                   placeholder="Question text…"
                   className="min-w-0 flex-1 resize-none rounded-md border border-foreground/10 bg-white px-2.5 py-1.5 text-sm leading-snug text-foreground focus:border-teal-700/40 focus:outline-none disabled:bg-foreground/5 whitespace-pre-wrap"

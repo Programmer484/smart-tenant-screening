@@ -11,6 +11,7 @@ import {
   defaultValueForKind,
   validateCondition,
 } from "@/lib/landlord-rule";
+import { ReorderButtons } from "./ReorderButtons";
 
 export function generateId() {
   return Math.random().toString(36).slice(2, 9);
@@ -236,34 +237,14 @@ export function RuleBuilder({
   return (
     <div className="flex min-w-0 w-full gap-3 rounded-xl border border-foreground/10 bg-background p-4 shadow-sm">
       {/* Reorder controls for global rules */}
-      {onMoveUp && onMoveDown && (
-        <div className="flex shrink-0 flex-col items-center gap-0.5 pt-1 text-foreground/30">
-          <button
-            type="button"
-            onClick={onMoveUp}
-            disabled={isFirst}
-            className="rounded p-0.5 transition-colors hover:text-foreground/70 disabled:cursor-not-allowed disabled:opacity-20"
-          >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 8l4-4 4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
-          </button>
-          <svg width="10" height="14" viewBox="0 0 10 14" fill="none" className="opacity-40">
-            <circle cx="3" cy="3" r="1" fill="currentColor" />
-            <circle cx="7" cy="3" r="1" fill="currentColor" />
-            <circle cx="3" cy="7" r="1" fill="currentColor" />
-            <circle cx="7" cy="7" r="1" fill="currentColor" />
-            <circle cx="3" cy="11" r="1" fill="currentColor" />
-            <circle cx="7" cy="11" r="1" fill="currentColor" />
-          </svg>
-          <button
-            type="button"
-            onClick={onMoveDown}
-            disabled={isLast}
-            className="rounded p-0.5 transition-colors hover:text-foreground/70 disabled:cursor-not-allowed disabled:opacity-20"
-          >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
-          </button>
-        </div>
-      )}
+      <div className="pt-1">
+        <ReorderButtons
+          onMoveUp={onMoveUp}
+          onMoveDown={onMoveDown}
+          isFirst={isFirst}
+          isLast={isLast}
+        />
+      </div>
 
       {/* Conditions */}
       <div className="flex min-w-0 flex-1 flex-col gap-2">

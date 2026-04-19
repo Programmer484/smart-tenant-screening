@@ -11,6 +11,7 @@ import {
 } from "@/lib/landlord-field";
 import type { Question } from "@/lib/question";
 import { generateId } from "./RuleBuilder";
+import { ReorderButtons } from "./ReorderButtons";
 
 const KIND_LABELS: Record<FieldValueKind, string> = {
   text: "Text",
@@ -115,37 +116,13 @@ function FieldRow({
   return (
     <div className="flex gap-3 rounded-xl border border-foreground/10 bg-background p-3 shadow-sm">
       {/* Reorder controls */}
-      <div className="flex flex-col items-center gap-0.5 pt-1 text-foreground/30">
-        <button
-          type="button"
-          onClick={onMoveUp}
-          disabled={index === 0}
-          aria-label="Move up"
-          className="rounded p-0.5 transition-colors hover:text-foreground/70 disabled:opacity-20 disabled:cursor-not-allowed"
-        >
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M2 8l4-4 4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-        <svg width="10" height="14" viewBox="0 0 10 14" fill="none" className="opacity-40">
-          <circle cx="3" cy="3" r="1" fill="currentColor" />
-          <circle cx="7" cy="3" r="1" fill="currentColor" />
-          <circle cx="3" cy="7" r="1" fill="currentColor" />
-          <circle cx="7" cy="7" r="1" fill="currentColor" />
-          <circle cx="3" cy="11" r="1" fill="currentColor" />
-          <circle cx="7" cy="11" r="1" fill="currentColor" />
-        </svg>
-        <button
-          type="button"
-          onClick={onMoveDown}
-          disabled={index === total - 1}
-          aria-label="Move down"
-          className="rounded p-0.5 transition-colors hover:text-foreground/70 disabled:opacity-20 disabled:cursor-not-allowed"
-        >
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
+      <div className="pt-1">
+        <ReorderButtons
+          onMoveUp={onMoveUp}
+          onMoveDown={onMoveDown}
+          isFirst={index === 0}
+          isLast={index === total - 1}
+        />
       </div>
 
       {/* Field content */}
