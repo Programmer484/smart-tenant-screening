@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
 import { ConfirmDialog } from "@/app/components/ConfirmDialog";
 import {
   resolveAiInstructions,
@@ -61,8 +60,8 @@ function ExtractionLog({ extracted }: { extracted: Extraction[] }) {
 }
 
 export default function ChatPage() {
-  const { id: propertyId } = useParams<{ id: string }>();
-  const supabase = createClient();
+  const paramId = useParams<{ id: string | string[] }>().id;
+  const propertyId = Array.isArray(paramId) ? paramId[0] : paramId;
 
   const [config, setConfig] = useState<ChatConfig | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -154,13 +153,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     async function load() {
-      const propRes = await supabase
-        .from("properties")
-        .select("*")
-        .eq("id", propertyId)
-        .single();
-
-      if (propRes.error || !propRes.data) {
+      if (!propertyId) {
         setMessages([{
           id: "init", role: "assistant",
           text: "This listing could not be found.",
@@ -169,23 +162,66 @@ export default function ChatPage() {
         return;
       }
 
-      const p = propRes.data as PropertyRecord;
+      const qs = isPreview ? "?preview=1" : "";
+      const propRes = await fetch(`/api/screening-property/${encodeURIComponent(propertyId)}${qs}`, {
+        credentials: "include",
+      });
 
-      if (!p.published_at && !isPreview) {
-        setListingUnpublished(true);
-        setConfig({
-          id: p.id,
-          title: p.title,
-          description: p.description ?? "",
-          fields: [],
-          questions: [],
-          rules: [],
-          links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) },
-          aiInstructions: resolveAiInstructions(p.ai_instructions),
-        });
+      if (propRes.status === 404) {
+        setMessages([{
+          id: "init", role: "assistant",
+          text: "This listing could not be found.",
+        }]);
         setPageReady(true);
         return;
       }
+
+      if (propRes.status === 403) {
+        const body = (await propRes.json()) as {
+          code?: string;
+          property?: {
+            id: string;
+            title: string;
+            description: string | null;
+            links: unknown;
+            ai_instructions: unknown;
+          };
+        };
+        if (body.code === "unpublished" && body.property) {
+          const p = body.property;
+          setListingUnpublished(true);
+          setConfig({
+            id: p.id,
+            title: p.title,
+            description: p.description ?? "",
+            fields: [],
+            questions: [],
+            rules: [],
+            links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) },
+            aiInstructions: resolveAiInstructions(p.ai_instructions as PropertyRecord["ai_instructions"]),
+          });
+          setPageReady(true);
+          return;
+        }
+        setMessages([{
+          id: "init", role: "assistant",
+          text: "This listing could not be found.",
+        }]);
+        setPageReady(true);
+        return;
+      }
+
+      if (!propRes.ok) {
+        setMessages([{
+          id: "init", role: "assistant",
+          text: "This listing could not be found.",
+        }]);
+        setPageReady(true);
+        return;
+      }
+
+      const { property: raw } = (await propRes.json()) as { property: PropertyRecord };
+      const p = raw;
 
       const cfg: ChatConfig = {
         id: p.id,

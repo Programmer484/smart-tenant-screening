@@ -5,9 +5,9 @@ import {
   type LandlordRule,
 } from "@/lib/landlord-rule";
 import { validateQuestionTree, type Question } from "@/lib/question";
-import { findNextQuestion, isInterviewComplete } from "@/lib/question-flow";
-import type { AiInstructions, PropertyLinks } from "@/lib/property";
-import { resolveAiInstructions, DEFAULT_LINKS } from "@/lib/property";
+import { findNextQuestion, isInterviewComplete, findActiveRejectionNode } from "@/lib/question-flow";
+import type { AiInstructions, PropertyLinks, PropertyVariable } from "@/lib/property";
+import { resolveAiInstructions, DEFAULT_LINKS, interpolateVariables } from "@/lib/property";
 import { createServiceClient } from "@/lib/supabase/service";
 import { evaluateRules, describeViolation } from "@/lib/rule-engine";
 import { callClaude, ClaudeApiError } from "@/lib/anthropic";
@@ -135,6 +135,7 @@ function buildSystemPrompt(
   rules: LandlordRule[],
   answers: Record<string, string>,
   ai: AiInstructions,
+  variables: PropertyVariable[]
 ): string {
   const nextQuestion = findNextQuestion(questions, fields, answers);
   const missingFromAsked = findMissingFieldsFromAskedQuestions(questions, fields, answers);
@@ -187,7 +188,7 @@ function buildSystemPrompt(
           const allFilled = q.fieldIds.every((fid) => answers[fid] !== undefined);
           const status = allFilled ? "✅ done" : "❌ pending";
           const fieldList = q.fieldIds.join(", ");
-          return `  ${i + 1}. "${q.text}" → fields: [${fieldList}] ${status}`;
+          return `  ${i + 1}. "${interpolateVariables(q.text, variables)}" → fields: [${fieldList}] ${status}`;
         })
         .join("\n")
     : "  None defined.";
@@ -213,7 +214,7 @@ function buildSystemPrompt(
         return f ? `${f.id} (${f.value_kind})` : fid;
       })
       .join(", ");
-    nextInstruction = `NEXT QUESTION: Ask exactly this: "${nextQuestion.text}". This question collects fields: [${fieldDetails}].${nextQuestion.extract_hint ? ` Hint: ${nextQuestion.extract_hint}` : ""}`;
+    nextInstruction = `NEXT QUESTION: Ask exactly this: "${interpolateVariables(nextQuestion.text, variables)}". This question collects fields: [${fieldDetails}].${nextQuestion.extract_hint ? ` Hint: ${nextQuestion.extract_hint}` : ""}`;
   } else {
     nextInstruction =
       "All screening questions have been collected. Do not ask any more questions. Thank the applicant and let them know their application is complete and will be reviewed.";
@@ -222,7 +223,7 @@ function buildSystemPrompt(
   let prompt = `You are a rental screening assistant for "${title}".
 
 PROPERTY:
-${description}
+${interpolateVariables(description, variables)}
 
 FIELD SCHEMA (data to collect):
 ${fieldSchemaBlock}
@@ -296,6 +297,9 @@ export async function POST(req: Request) {
     : [];
   const questions = Array.isArray(rec.questions)
     ? (rec.questions as Question[])
+    : [];
+  const variables = Array.isArray(rec.variables)
+    ? (rec.variables as PropertyVariable[])
     : [];
   const rules = Array.isArray(rec.rules) ? normalizeRulesList(rec.rules) : [];
   const answers =
@@ -413,7 +417,7 @@ export async function POST(req: Request) {
   // ── PHASE 1: Extract fields ──
 
   const extractSystem = buildSystemPrompt(
-    title, description, fields, questions, rules, answers, ai,
+    title, description, fields, questions, rules, answers, ai, variables
   );
 
   let extractData;
@@ -470,6 +474,7 @@ export async function POST(req: Request) {
 
   // Completion: every active question (root + triggered children) must be fully answered
   const allFieldsCollected = isInterviewComplete(questions, fields, mergedAnswers);
+  const activeRejection = findActiveRejectionNode(questions, fields, mergedAnswers);
 
   // ── Update counters ──
 
@@ -494,7 +499,10 @@ export async function POST(req: Request) {
 
   let responseContext = "";
 
-  if (ai.offTopicLimit > 0 && offTopicCount >= ai.offTopicLimit) {
+  if (activeRejection) {
+    sessionStatus = "rejected";
+    responseContext = `\n\nIMPORTANT — REJECTION TRIGGERED:\nThe applicant has triggered a rejection path. Stop the interview immediately. Use the following rejection message: "${activeRejection.text}"`;
+  } else if (ai.offTopicLimit > 0 && offTopicCount >= ai.offTopicLimit) {
     sessionStatus = "rejected";
     responseContext = `\n\nIMPORTANT — OFF-TOPIC REJECTION:\nThe applicant has sent ${offTopicCount} consecutive off-topic messages (limit: ${ai.offTopicLimit}). Close the conversation and state the reason.`;
   } else if (firstViolation) {
@@ -539,7 +547,7 @@ export async function POST(req: Request) {
   // ── PHASE 2: Generate response ──
 
   const respondSystem = buildSystemPrompt(
-    title, description, fields, questions, rules, mergedAnswers, ai,
+    title, description, fields, questions, rules, mergedAnswers, ai, variables
   ) + responseContext;
 
   let respondData;

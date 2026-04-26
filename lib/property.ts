@@ -44,12 +44,19 @@ export function resolveAiInstructions(
 
 export const DEFAULT_MAX_FIELDS_PER_QUESTION = 3;
 
+export type PropertyVariable = {
+  id: string; // e.g. "date_available"
+  value: string; // e.g. "June 1st, 2026"
+};
+
 /** Raw shape as stored in the `properties` table */
 export type PropertyRecord = {
   id: string;
   user_id: string;
   title: string;
   description: string;
+  /** Custom landlord-defined variables for text interpolation */
+  variables: PropertyVariable[];
   /** Canonical data fields (the truth layer) */
   fields: LandlordField[];
   /** Ordered questions for the interview flow (maps to fields via fieldIds) */
@@ -65,3 +72,13 @@ export type PropertyRecord = {
   created_at: string;
   updated_at: string;
 };
+
+/** Interpolate variables into a string, replacing {{var_id}} with the variable's value */
+export function interpolateVariables(text: string, variables: PropertyVariable[]): string {
+  if (!text || variables.length === 0) return text;
+  return text.replace(/\{\{([^}]+)\}\}/g, (match, p1) => {
+    const key = p1.trim();
+    const variable = variables.find(v => v.id === key);
+    return variable ? variable.value : match;
+  });
+}

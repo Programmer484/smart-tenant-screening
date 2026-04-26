@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
-import type { PropertyRecord, PropertyLinks, AiInstructions } from "@/lib/property";
+import type { PropertyRecord, PropertyLinks, AiInstructions, PropertyVariable } from "@/lib/property";
 import { DEFAULT_AI_INSTRUCTIONS, DEFAULT_LINKS, DEFAULT_MAX_FIELDS_PER_QUESTION, resolveAiInstructions } from "@/lib/property";
 import type { LandlordField } from "@/lib/landlord-field";
 import {
@@ -30,15 +30,18 @@ import {
 import RulesSection from "@/app/components/RulesSection";
 import { PropertyEditorSkeleton } from "@/app/components/Skeleton";
 import { ConfirmDialog } from "@/app/components/ConfirmDialog";
+import { ShareLinkModal } from "@/app/components/ShareLinkModal";
 import { RuleProposalModal, type Proposal } from "@/app/components/RuleProposalModal";
 import LandlordFieldsSection from "@/app/components/LandlordFieldsSection";
+import VariablesSection from "@/app/components/VariablesSection";
+import { VariableShortcuts, insertAtCursor } from "@/app/components/VariableShortcuts";
 import { FieldPickerPopover } from "@/app/components/FieldPickerPopover";
 import { ReorderButtons } from "@/app/components/ReorderButtons";
 import { depthStyle } from "@/app/components/depth-styles";
 import TextareaAutosize from "react-textarea-autosize";
 import { PropertyWalkthrough } from "@/app/components/PropertyWalkthrough";
 
-const TABS = ["Fields", "Questions", "Rules", "Links", "AI Behavior"] as const;
+const TABS = ["Fields", "Variables", "Questions", "Rules", "Links", "AI Behavior"] as const;
 type Tab = (typeof TABS)[number];
 
 function generateId() {
@@ -269,6 +272,7 @@ function QuestionNode({
   node,
   questions,
   fields,
+  variables,
   depth,
   pathLabel,
   maxFields,
@@ -285,6 +289,7 @@ function QuestionNode({
   node: QuestionTreeNode;
   questions: Question[];
   fields: LandlordField[];
+  variables: PropertyVariable[];
   depth: number;
   /** Hierarchical label like "Q1", "Q1.2", "Q1.2.1" — purely informational. */
   pathLabel: string;
@@ -299,7 +304,7 @@ function QuestionNode({
   requestDeleteQuestion: (index: number, descendantCount: number) => void;
   onMoveRootUp?: () => void;
   onMoveRootDown?: () => void;
-  addFollowUp: (parentIndex: number) => void;
+  addFollowUp: (parentIndex: number, isRejection?: boolean) => void;
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const lastQuestionJumpHandledRef = useRef(0);
@@ -449,6 +454,8 @@ function QuestionNode({
 
   const hintEditing = hintOpen || !!q.extract_hint;
   const extractHintRef = useTextareaAutosize(q.extract_hint || "", hintEditing);
+  const textRef = useRef<HTMLTextAreaElement>(null);
+  
   const cardBody = (
     <div className="flex flex-1 flex-col gap-2 min-w-0">
       <div className="flex items-start gap-2">
@@ -456,14 +463,22 @@ function QuestionNode({
           {pathLabelEl}
           {collapseToggle}
         </div>
-        <TextareaAutosize
-          value={q.text}
-          onChange={(e) => updateQuestion(node.index, { ...q, text: e.target.value })}
-          minRows={1}
-          placeholder={isChild ? "Untitled follow-up — click to add question text" : "Question text (e.g. How many people will live here?)"}
-          className={`min-w-0 flex-1 resize-none rounded-md border bg-white px-2.5 py-1.5 text-sm leading-snug text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:outline-none whitespace-pre-wrap ${isUntitled ? "border-dashed border-foreground/20" : "border-foreground/10"
-            }`}
-        />
+        <div className="flex-1 flex flex-col min-w-0">
+          <TextareaAutosize
+            ref={textRef}
+            value={q.text}
+            onChange={(e) => updateQuestion(node.index, { ...q, text: e.target.value })}
+            minRows={1}
+            placeholder={q.is_rejection ? "Rejection message (e.g. Unfortunately, we do not allow pets...)" : isChild ? "Untitled follow-up — click to add question text" : "Question text (e.g. How many people will live here?)"}
+            className={`min-w-0 flex-1 resize-none rounded-md border px-2.5 py-1.5 text-sm leading-snug text-foreground placeholder:text-foreground/30 focus:outline-none whitespace-pre-wrap ${
+              q.is_rejection ? "bg-red-50/50 focus:border-red-400" : "bg-white focus:border-teal-700/40"
+            } ${isUntitled ? "border-dashed border-foreground/20" : "border-foreground/10"}`}
+          />
+          <VariableShortcuts 
+            variables={variables} 
+            onInsert={(varId) => insertAtCursor(q.text, varId, textRef, (newText) => updateQuestion(node.index, { ...q, text: newText }))}
+          />
+        </div>
         <div className="flex shrink-0 flex-col items-end gap-1 pt-0.5">
           {metaChips}
           <button
@@ -482,52 +497,54 @@ function QuestionNode({
 
       {conditionPill}
 
-      <div className="flex flex-wrap items-center gap-1">
-        {linkedFieldObjs.map((f) => (
-          <span
-            key={f.id}
-            className="inline-flex items-center gap-1 rounded-full border border-teal-700/20 bg-teal-50 px-2 py-0.5 text-[11px] text-teal-800"
-            title={f.id}
-          >
-            {f.label || f.id}
-          </span>
-        ))}
-        {missingFieldIds.map((id) => (
-          <span
-            key={id}
-            className="inline-flex items-center gap-1 rounded-full border border-red-300 bg-red-50 pl-2 pr-1 py-0.5 text-[11px] text-red-800"
-            title={`Field "${id}" not found in schema`}
-          >
-            Missing: {id}
-            <button
-              type="button"
-              onClick={() => updateQuestion(node.index, { ...q, fieldIds: q.fieldIds.filter(x => x !== id) })}
-              className="ml-0.5 flex items-center justify-center rounded-full p-0.5 hover:bg-red-800/10 hover:text-red-900 transition-colors"
-              aria-label="Remove missing field"
+      {!q.is_rejection && (
+        <div className="flex flex-wrap items-center gap-1">
+          {linkedFieldObjs.map((f) => (
+            <span
+              key={f.id}
+              className="inline-flex items-center gap-1 rounded-full border border-teal-700/20 bg-teal-50 px-2 py-0.5 text-[11px] text-teal-800"
+              title={f.id}
             >
-              <svg width="8" height="8" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
-            </button>
-          </span>
-        ))}
-        <button
-          ref={editFieldsBtnRef}
-          type="button"
-          onClick={openPicker}
-          className="inline-flex items-center gap-1 rounded-full border border-dashed border-foreground/20 px-2 py-0.5 text-[11px] text-foreground/55 hover:border-teal-700/40 hover:text-teal-700 transition-colors"
-        >
-          <svg width="9" height="9" viewBox="0 0 12 12" fill="none">
-            <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-          {linkedFieldObjs.length === 0 && missingFieldIds.length === 0 ? "Add fields" : "Edit"}
-        </button>
-        {overLimit && (
-          <span className="ml-1 text-[11px] text-amber-600">
-            over {maxFields} field limit
-          </span>
-        )}
-      </div>
+              {f.label || f.id}
+            </span>
+          ))}
+          {missingFieldIds.map((id) => (
+            <span
+              key={id}
+              className="inline-flex items-center gap-1 rounded-full border border-red-300 bg-red-50 pl-2 pr-1 py-0.5 text-[11px] text-red-800"
+              title={`Field "${id}" not found in schema`}
+            >
+              Missing: {id}
+              <button
+                type="button"
+                onClick={() => updateQuestion(node.index, { ...q, fieldIds: q.fieldIds.filter(x => x !== id) })}
+                className="ml-0.5 flex items-center justify-center rounded-full p-0.5 hover:bg-red-800/10 hover:text-red-900 transition-colors"
+                aria-label="Remove missing field"
+              >
+                <svg width="8" height="8" viewBox="0 0 12 12" fill="none"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+              </button>
+            </span>
+          ))}
+          <button
+            ref={editFieldsBtnRef}
+            type="button"
+            onClick={openPicker}
+            className="inline-flex items-center gap-1 rounded-full border border-dashed border-foreground/20 px-2 py-0.5 text-[11px] text-foreground/55 hover:border-teal-700/40 hover:text-teal-700 transition-colors"
+          >
+            <svg width="9" height="9" viewBox="0 0 12 12" fill="none">
+              <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            {linkedFieldObjs.length === 0 && missingFieldIds.length === 0 ? "Add fields" : "Edit"}
+          </button>
+          {overLimit && (
+            <span className="ml-1 text-[11px] text-amber-600">
+              over {maxFields} field limit
+            </span>
+          )}
+        </div>
+      )}
 
-      {hintEditing && (
+      {!q.is_rejection && hintEditing && (
         <textarea
           ref={extractHintRef}
           autoFocus={hintOpen && !q.extract_hint}
@@ -540,7 +557,7 @@ function QuestionNode({
         />
       )}
 
-      {(!hintEditing || q.fieldIds.length > 0) && (
+      {(!q.is_rejection && (!hintEditing || q.fieldIds.length > 0)) && (
         <div className="flex items-center gap-3 text-[11px]">
           {!hintEditing && (
             <button
@@ -552,16 +569,28 @@ function QuestionNode({
             </button>
           )}
           {q.fieldIds.length > 0 && (
-            <button
-              type="button"
-              onClick={() => addFollowUp(node.index)}
-              className="tour-add-followup flex items-center gap-1 text-teal-700/70 hover:text-teal-700 transition-colors"
-            >
-              <svg width="9" height="9" viewBox="0 0 12 12" fill="none">
-                <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
-              Add follow-up
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => addFollowUp(node.index, false)}
+                className="tour-add-followup flex items-center gap-1 text-teal-700/70 hover:text-teal-700 transition-colors"
+              >
+                <svg width="9" height="9" viewBox="0 0 12 12" fill="none">
+                  <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+                Add follow-up
+              </button>
+              <button
+                type="button"
+                onClick={() => addFollowUp(node.index, true)}
+                className="flex items-center gap-1 text-red-700/70 hover:text-red-700 transition-colors"
+              >
+                <svg width="9" height="9" viewBox="0 0 12 12" fill="none">
+                  <path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+                Add rejection branch
+              </button>
+            </>
           )}
         </div>
       )}
@@ -593,6 +622,7 @@ function QuestionNode({
             node={child}
             questions={questions}
             fields={fields}
+            variables={variables}
             depth={depth + 1}
             pathLabel={`${pathLabel}.${ci + 1}`}
             maxFields={maxFields}
@@ -609,13 +639,15 @@ function QuestionNode({
     )
   ) : null;
 
-  const cardChrome = `group flex items-stretch gap-1 rounded-lg border bg-white shadow-sm transition-colors ${isInvalid
-    ? "border-red-300 ring-1 ring-red-100/90"
+  const cardChrome = `group flex items-stretch gap-1 rounded-lg border shadow-sm transition-colors ${isInvalid
+    ? "bg-white border-red-300 ring-1 ring-red-100/90"
     : isUntitled
-      ? "border-dashed border-foreground/15"
+      ? "bg-white border-dashed border-foreground/15"
       : overLimit
-        ? "border-amber-300"
-        : "border-foreground/10"
+        ? "bg-white border-amber-300"
+        : q.is_rejection
+          ? "bg-red-50/50 border-red-200"
+          : "bg-white border-foreground/10"
     }`;
 
   return (
@@ -652,6 +684,7 @@ export default function PropertySetupPage() {
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [variables, setVariables] = useState<PropertyVariable[]>([]);
   const [fields, setFields] = useState<LandlordField[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [rules, setRules] = useState<LandlordRule[]>([]);
@@ -662,7 +695,7 @@ export default function PropertySetupPage() {
   const [activeTab, setActiveTab] = useState<Tab>("Questions");
   const [loadingPhase, setLoadingPhase] = useState<null | "questions" | "rules">(null);
   const [editingTitle, setEditingTitle] = useState(false);
-  const [tenantNameLink, setTenantNameLink] = useState("");
+  const [shareModalOpen, setShareModalOpen] = useState(false);
 
   const [saving, setSaving] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
@@ -718,6 +751,7 @@ export default function PropertySetupPage() {
       const p = propRes.data as PropertyRecord;
       setTitle(p.title);
       setDescription(p.description);
+      setVariables((p.variables as PropertyVariable[]) ?? []);
       setFields((p.fields as LandlordField[]) ?? []);
       setQuestions((p.questions as Question[]) ?? []);
       const migratedRules = migrateRules((p.rules as unknown[]) ?? []);
@@ -729,6 +763,7 @@ export default function PropertySetupPage() {
 
       lastSavedRef.current = JSON.stringify({
         title: p.title, description: p.description,
+        variables: (p.variables as PropertyVariable[]) ?? [],
         fields: (p.fields as LandlordField[]) ?? [],
         questions: (p.questions as Question[]) ?? [],
         rules: migratedRules, links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) },
@@ -745,9 +780,9 @@ export default function PropertySetupPage() {
   // ── Dirty tracking ──
   useEffect(() => {
     if (pageLoading) return;
-    const current = JSON.stringify({ title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion, publishedAt });
+    const current = JSON.stringify({ title, description, variables, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion, publishedAt });
     setDirty(current !== lastSavedRef.current);
-  }, [title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion, publishedAt, pageLoading, lastSavedRef]);
+  }, [title, description, variables, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion, publishedAt, pageLoading, lastSavedRef]);
 
   useEffect(() => {
     function onBeforeUnload(e: BeforeUnloadEvent) {
@@ -795,6 +830,7 @@ export default function PropertySetupPage() {
         .update({
           title: title.trim() || "New Property",
           description: description.trim(),
+          variables,
           fields: cleanFields,
           questions: cleanQuestions,
           rules,
@@ -812,6 +848,7 @@ export default function PropertySetupPage() {
       lastSavedRef.current = JSON.stringify({
         title,
         description,
+        variables,
         fields: cleanFields,
         questions: cleanQuestions,
         rules,
@@ -829,7 +866,7 @@ export default function PropertySetupPage() {
       }, 2000);
       return true;
     },
-    [id, title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion, publishedAt, supabase], // eslint-disable-line react-hooks/exhaustive-deps
+    [id, title, description, variables, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion, publishedAt, supabase], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   saveRef.current = save;
@@ -1361,7 +1398,7 @@ export default function PropertySetupPage() {
   /** Insert a follow-up question right after the subtree rooted at `parentIndex`,
    *  parented to it via `parentQuestionId` and pre-configured with a trigger
    *  on the parent's first field. */
-  function addFollowUp(parentIndex: number) {
+  function addFollowUp(parentIndex: number, isRejection = false) {
     const parent = questions[parentIndex];
     if (!parent || parent.fieldIds.length === 0) return;
     const triggerFid = parent.fieldIds[0];
@@ -1379,6 +1416,7 @@ export default function PropertySetupPage() {
         operator: defaultOperatorForKind(triggerField.value_kind),
         value: defaultValueForKind(triggerField.value_kind),
       },
+      is_rejection: isRejection,
     };
 
     setQuestions((prev) => {
@@ -1409,20 +1447,6 @@ export default function PropertySetupPage() {
   const invalidQuestionCount = questionInvalid.count;
   const invalidIssueCount = invalidRuleCount + invalidQuestionCount;
   const isReady = invalidIssueCount === 0;
-
-  async function copyShareLink() {
-    if (!isReady) return;
-    if (!publishedAt) {
-      toast.error("Publish this property before sharing the applicant chat link.");
-      return;
-    }
-    let url = `${window.location.origin}/chat/${id}`;
-    if (tenantNameLink.trim()) {
-      url += `?name=${encodeURIComponent(tenantNameLink.trim())}`;
-    }
-    await navigator.clipboard.writeText(url);
-    toast.success("Chat link copied — share it with applicants");
-  }
 
   async function handlePublish() {
     if (!isReady) return;
@@ -1517,17 +1541,9 @@ export default function PropertySetupPage() {
           </div>
 
           <div id="tour-publish-btn" className="flex shrink-0 items-center gap-2">
-            <input
-              type="text"
-              placeholder="Applicant name (optional)..."
-              value={tenantNameLink}
-              onChange={(e) => setTenantNameLink(e.target.value)}
-              disabled={!isReady || !publishedAt}
-              className="h-8 w-44 rounded-lg border border-black/10 bg-white px-3 text-xs placeholder:text-black/30 focus:border-teal-600/40 focus:outline-none focus:ring-2 focus:ring-teal-600/20 disabled:cursor-not-allowed disabled:bg-[#f7f9f8]"
-            />
             <button
               type="button"
-              onClick={() => void copyShareLink()}
+              onClick={() => setShareModalOpen(true)}
               disabled={!isReady || !publishedAt}
               title={
                 !isReady
@@ -1615,13 +1631,19 @@ export default function PropertySetupPage() {
               onChange={(e) => setTitle(e.target.value)}
               className="w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-4 py-2.5 text-base font-semibold text-foreground placeholder:font-normal placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
             />
-            <textarea
-              ref={descRef}
-              placeholder="Describe your property — rent, rules, requirements, pet policy, lease length, etc."
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              className="min-h-[120px] w-full resize-none overflow-hidden rounded-lg border border-foreground/10 bg-[#f7f9f8] px-4 py-3 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
-            />
+            <div>
+              <textarea
+                ref={descRef}
+                placeholder="Describe your property — rent, rules, requirements, pet policy, lease length, etc."
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                className="min-h-[120px] w-full resize-none overflow-hidden rounded-lg border border-foreground/10 bg-[#f7f9f8] px-4 py-3 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
+              />
+              <VariableShortcuts 
+                variables={variables} 
+                onInsert={(varId) => insertAtCursor(description, varId, descRef, setDescription)}
+              />
+            </div>
           </div>
         </section>
 
@@ -1665,6 +1687,23 @@ export default function PropertySetupPage() {
                     requestDeleteField(index);
                     return false;
                   }}
+                />
+              </div>
+            )}
+
+            {/* ── Variables Tab ── */}
+            {activeTab === "Variables" && (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-sm font-medium text-foreground/80">Custom variables</h3>
+                  <p className="text-xs text-foreground/40">
+                    Define custom variables that can be dynamically inserted into question text. Use {"{{variable_name}}"} in your questions to show the value.
+                  </p>
+                </div>
+
+                <VariablesSection
+                  variables={variables}
+                  onChange={setVariables}
                 />
               </div>
             )}
@@ -1752,6 +1791,7 @@ export default function PropertySetupPage() {
                           node={root}
                           questions={questions}
                           fields={fields}
+                          variables={variables}
                           depth={0}
                           pathLabel={`Q${ri + 1}`}
                           maxFields={maxFieldsPerQuestion}
@@ -1943,6 +1983,12 @@ export default function PropertySetupPage() {
         existingFields={fields}
         onConfirm={applyProposal}
         onCancel={() => setRuleProposal(null)}
+      />
+
+      <ShareLinkModal
+        open={shareModalOpen}
+        propertyId={id}
+        onClose={() => setShareModalOpen(false)}
       />
 
       <ConfirmDialog

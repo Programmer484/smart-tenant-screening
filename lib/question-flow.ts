@@ -159,3 +159,17 @@ export function isInterviewComplete(
 ): boolean {
   return findNextQuestion(questions, fields, answers) === null;
 }
+
+/** Check if there are any active rejection nodes. If so, return the first one. */
+export function findActiveRejectionNode(
+  questions: Question[],
+  fields: LandlordField[],
+  answers: Record<string, string>,
+): Question | null {
+  const byId = new Map(questions.map((q) => [q.id, q]));
+  for (const q of sorted(questions)) {
+    if (!q.is_rejection) continue;
+    if (isQuestionActive(q, byId, fields, answers)) return q;
+  }
+  return null;
+}

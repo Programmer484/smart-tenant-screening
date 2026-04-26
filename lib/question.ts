@@ -35,6 +35,8 @@ export type Question = {
   parentQuestionId?: string;
   /** Required iff `parentQuestionId` is set. Evaluated against parent's answer. */
   trigger?: QuestionTrigger;
+  /** If true, this node acts as a terminal rejection branch rather than a question to ask. */
+  is_rejection?: boolean;
 };
 
 /** Suggested `<textarea rows>` from explicit newlines so long prompts stay readable. */
@@ -95,6 +97,10 @@ export function validateQuestion(
   question: Question,
   fieldIds: string[],
 ): string | null {
+  if (question.is_rejection) {
+    if (!question.text.trim()) return "Rejection message is required";
+    return null; // Rejection nodes don't need fields
+  }
   if (!question.text.trim()) return "Question text is required";
   if (question.fieldIds.length === 0) return "Link at least one field to this question";
   for (const fid of question.fieldIds) {
