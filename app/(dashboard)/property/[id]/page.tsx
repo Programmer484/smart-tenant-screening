@@ -262,10 +262,6 @@ export default function PropertySetupPage() {
     }
     try {
       setLoadingPhase("questions");
-      const existingVisRules = rules.filter(isFieldVisibilityRule).map((r) => ({
-        targetFieldId: r.targetFieldId!,
-        conditions: r.conditions.map((c) => ({ fieldId: c.fieldId, operator: c.operator, value: c.value })),
-      }));
       const res = await fetch("/api/generate-fields", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -273,7 +269,6 @@ export default function PropertySetupPage() {
           description: prompt,
           existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
           existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
-          existingVisibilityRules: existingVisRules,
         }),
       });
       const data = await res.json();
@@ -297,9 +292,8 @@ export default function PropertySetupPage() {
       const proposedFields: LandlordField[] = data.newFields ?? [];
       const proposedQuestions: Question[] = data.questions ?? [];
       const deletedQuestionIds: string[] = data.deletedQuestionIds ?? [];
-      const visibilityRules: LandlordRule[] = data.visibilityRules ?? [];
 
-      if (proposedFields.length === 0 && proposedQuestions.length === 0 && deletedQuestionIds.length === 0 && visibilityRules.length === 0) {
+      if (proposedFields.length === 0 && proposedQuestions.length === 0 && deletedQuestionIds.length === 0) {
         toast.info("No new items to add — AI found everything is covered.");
         return;
       }
@@ -311,7 +305,6 @@ export default function PropertySetupPage() {
         newFields: proposedFields,
         proposedQuestions,
         deletedQuestionIds,
-        visibilityRules,
       });
     } catch (err) {
       console.error("[generateQuestions]", err);
@@ -357,10 +350,6 @@ export default function PropertySetupPage() {
       if (newFields.length > 0) {
         toast.info("Analyzing missing fields...");
         const newFieldsDesc = newFields.map(f => `${f.label || f.id} (type: ${f.value_kind})`).join(", ");
-        const existingVisRules = rules.filter(isFieldVisibilityRule).map((r) => ({
-          targetFieldId: r.targetFieldId!,
-          conditions: r.conditions.map((c) => ({ fieldId: c.fieldId, operator: c.operator, value: c.value })),
-        }));
         const res2 = await fetch("/api/generate-fields", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -368,7 +357,6 @@ export default function PropertySetupPage() {
              description: `We are building new screening rules that require these NEW fields (not in the schema yet): ${newFieldsDesc}. We need interview questions to collect them.\n\nIMPORTANT: Look at EXISTING QUESTIONS in the system context. If any existing question is on the same topic as these fields (e.g. house rules, smoking, pets, drugs, income — or one combined "policies" style question), UPDATE that question: keep its id, add the new field id(s) to fieldIds, and rewrite the question text so it naturally asks for everything in one place. Only add a brand-new question if no existing question is a good fit. Prefer merging related checks into one question when it stays readable.`,
              existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
              existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
-             existingVisibilityRules: existingVisRules,
           })
         });
         const data2 = await res2.json();
@@ -390,7 +378,6 @@ export default function PropertySetupPage() {
            newFields,
            proposedQuestions: data2.ok !== false ? (data2.questions || []) : [],
            deletedQuestionIds: data2.ok !== false ? (data2.deletedQuestionIds || []) : [],
-           visibilityRules: data2.ok !== false ? (data2.visibilityRules || []) : [],
         });
         return;
       }
@@ -402,7 +389,6 @@ export default function PropertySetupPage() {
         newFields: [],
         proposedQuestions: [],
         deletedQuestionIds: [],
-        visibilityRules: [],
       });
 
     } catch (err) {
@@ -452,7 +438,7 @@ export default function PropertySetupPage() {
       });
     }
 
-    // 3. Delete / modify / add rules + visibility rules (dedup by targetFieldId)
+    // 3. Delete / modify / add rules
     setRules((prev) => {
       let next = [...prev];
       if (ruleProposal.deletedRuleIds.length > 0) {
@@ -465,18 +451,6 @@ export default function PropertySetupPage() {
       if (ruleProposal.newRules.length > 0) {
         next = [...next, ...ruleProposal.newRules];
       }
-      if (ruleProposal.visibilityRules.length > 0) {
-        for (const vr of ruleProposal.visibilityRules) {
-          const existingIdx = next.findIndex(
-            (r) => isFieldVisibilityRule(r) && r.targetFieldId === vr.targetFieldId,
-          );
-          if (existingIdx >= 0) {
-            next[existingIdx] = vr;
-          } else {
-            next.push(vr);
-          }
-        }
-      }
       return next;
     });
 
@@ -484,11 +458,9 @@ export default function PropertySetupPage() {
     const rc = ruleProposal.newRules.length + ruleProposal.modifiedRules.length + ruleProposal.deletedRuleIds.length;
     const fc = ruleProposal.newFields.length;
     const qc = ruleProposal.proposedQuestions.length + ruleProposal.deletedQuestionIds.length;
-    const vc = ruleProposal.visibilityRules.length;
     if (rc > 0) parts.push(`${rc} rule(s)`);
     if (fc > 0) parts.push(`${fc} field(s)`);
     if (qc > 0) parts.push(`${qc} question(s)`);
-    if (vc > 0) parts.push(`${vc} visibility rule(s)`);
     toast.success(`Applied ${parts.join(" + ") || "changes"}`);
     setRuleProposal(null);
   }

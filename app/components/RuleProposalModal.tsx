@@ -3,7 +3,60 @@
 import { useEffect, useRef } from "react";
 import type { LandlordField } from "@/lib/landlord-field";
 import type { LandlordRule } from "@/lib/landlord-rule";
-import type { Question } from "@/lib/question";
+import type { Branch, Question } from "@/lib/question";
+
+const OUTCOME_STYLES: Record<string, { label: string; badge: string; border: string; bg: string; text: string }> = {
+  reject:   { label: "Reject",        badge: "bg-red-100 text-red-700 border-red-200",    border: "border-red-200",   bg: "bg-red-50/40",   text: "text-red-900/70" },
+  review:   { label: "Manual Review", badge: "bg-amber-100 text-amber-700 border-amber-200", border: "border-amber-200", bg: "bg-amber-50/40", text: "text-amber-900/70" },
+  followups:{ label: "Follow-ups",    badge: "bg-blue-100 text-blue-700 border-blue-200",   border: "border-blue-200",  bg: "bg-blue-50/30",  text: "text-blue-900/70" },
+  continue: { label: "Continue",      badge: "bg-gray-100 text-gray-600 border-gray-200",   border: "border-gray-200",  bg: "bg-gray-50/40",  text: "text-gray-700" },
+};
+
+const OP_LABEL: Record<string, string> = {
+  "==": "is", "!=": "is not", ">": ">", ">=": "≥", "<": "<", "<=": "≤",
+};
+
+function BranchList({ branches, fieldLabel, depth = 0 }: {
+  branches: Branch[];
+  fieldLabel: (id: string) => string;
+  depth?: number;
+}) {
+  if (branches.length === 0) return null;
+  return (
+    <div className={`flex flex-col gap-1.5 ${depth > 0 ? "ml-4 mt-1.5" : "mt-2"}`}>
+      {branches.map((b) => {
+        const style = OUTCOME_STYLES[b.outcome] ?? OUTCOME_STYLES.continue;
+        const condLabel = `${fieldLabel(b.condition.fieldId)} ${OP_LABEL[b.condition.operator] ?? b.condition.operator} ${b.condition.value}`;
+        return (
+          <div key={b.id} className={`rounded-lg border ${style.border} ${style.bg} px-2.5 py-1.5`}>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] text-foreground/40 font-medium uppercase tracking-wide">if</span>
+              <span className="text-xs text-foreground/70 font-mono">{condLabel}</span>
+              <span className={`ml-auto text-[10px] font-semibold uppercase tracking-wide border rounded px-1.5 py-0.5 ${style.badge}`}>
+                {style.label}
+              </span>
+            </div>
+            {b.subQuestions.length > 0 && (
+              <div className="mt-1.5 flex flex-col gap-1.5 border-l-2 border-blue-200 pl-2.5">
+                {b.subQuestions.map((sq) => (
+                  <div key={sq.id} className="flex flex-col gap-0.5">
+                    <div className="text-xs font-medium text-foreground/80">{sq.text}</div>
+                    <div className="flex flex-wrap gap-1">
+                      {sq.fieldIds.map((fid) => (
+                        <span key={fid} className="text-[10px] rounded bg-black/5 border border-black/5 px-1.5 py-0.5 text-black/50">{fid}</span>
+                      ))}
+                    </div>
+                    <BranchList branches={sq.branches} fieldLabel={fieldLabel} depth={depth + 1} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 export type Proposal = {
   newRules: LandlordRule[];
@@ -12,7 +65,6 @@ export type Proposal = {
   newFields: LandlordField[];
   proposedQuestions: Question[];
   deletedQuestionIds: string[];
-  visibilityRules: LandlordRule[];
 };
 
 export function RuleProposalModal({
@@ -46,8 +98,7 @@ export function RuleProposalModal({
   const hasRuleChanges = proposal.newRules.length > 0 || proposal.modifiedRules.length > 0 || proposal.deletedRuleIds.length > 0;
   const hasFieldChanges = proposal.newFields.length > 0;
   const hasQuestionChanges = proposal.proposedQuestions.length > 0 || proposal.deletedQuestionIds.length > 0;
-  const hasVisibilityRules = proposal.visibilityRules.length > 0;
-  const hasChanges = hasRuleChanges || hasFieldChanges || hasQuestionChanges || hasVisibilityRules;
+  const hasChanges = hasRuleChanges || hasFieldChanges || hasQuestionChanges;
 
   const fieldLabel = (id: string) => {
     const f = existingFields?.find((ef) => ef.id === id) ?? proposal.newFields.find((nf) => nf.id === id);
@@ -227,8 +278,8 @@ export function RuleProposalModal({
                           <div className="text-sm text-foreground/40 line-through mb-1">{existing.text}</div>
                         )}
                         <div className="text-sm font-medium text-foreground">{q.text}</div>
-                        
-                        <div className="flex flex-wrap gap-1 mt-1">
+
+                        <div className="flex flex-wrap gap-1">
                           {q.fieldIds.map((fid) => {
                             const isNewlyLinked = isUpdate && !existing.fieldIds.includes(fid);
                             return (
@@ -239,36 +290,14 @@ export function RuleProposalModal({
                             );
                           })}
                         </div>
+
+                        {q.branches.length > 0 && (
+                          <BranchList branches={q.branches} fieldLabel={fieldLabel} />
+                        )}
                       </div>
                     </li>
                   );
                 })}
-              </ul>
-            </div>
-          )}
-
-          {/* Visibility Rules (Conditional Fields) */}
-          {hasVisibilityRules && (
-            <div>
-              <h4 className="text-xs font-semibold uppercase tracking-wider text-indigo-600">Conditional Fields</h4>
-              <ul className="mt-2 flex flex-col gap-2">
-                {proposal.visibilityRules.map((rule, i) => (
-                  <li key={i} className="rounded-lg border border-indigo-100 bg-indigo-50/30 p-3 text-sm flex items-start gap-2">
-                    <span className="font-medium text-indigo-900/80 shrink-0">Show</span>
-                    <div className="flex flex-col text-indigo-900/80">
-                      <span className="font-medium">&ldquo;{fieldLabel(rule.targetFieldId!)}&rdquo;</span>
-                      <span className="text-indigo-700/60 text-xs mt-0.5">
-                        only when{" "}
-                        {rule.conditions.map((c, idx) => (
-                          <span key={idx}>
-                            {idx > 0 && <span className="font-bold uppercase text-[10px] mx-1">and</span>}
-                            {fieldLabel(c.fieldId)} {c.operator} {c.value}
-                          </span>
-                        ))}
-                      </span>
-                    </div>
-                  </li>
-                ))}
               </ul>
             </div>
           )}
