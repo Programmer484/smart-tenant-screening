@@ -1,38 +1,29 @@
-/**
- * Questions are the tenant-facing collection layer.
- * Each question maps to one or more fields (the truth/data layer).
- *
- * - A question can collect multiple fields (compound questions)
- * - A field can be referenced by multiple questions (fallback/follow-up)
- * - The chat engine walks through questions in strict order, extracting fields
- */
+export type BranchCondition = {
+  fieldId: string;
+  operator: string;
+  value: string;
+};
 
-export type Question = {
-  /** Unique id */
+export type BranchOutcome = "continue" | "followups" | "review" | "reject";
+
+export type Branch = {
   id: string;
-  /** The question text shown to the tenant */
-  text: string;
-  /** Field IDs this question collects data for */
-  fieldIds: string[];
-  /** Sort order for the interview flow */
-  sort_order: number;
-  /** Optional hint for the AI on how to extract fields from the answer */
-  extract_hint?: string;
+  condition: BranchCondition;
+  outcome: BranchOutcome;
+  subQuestions: Question[];
 };
 
 /**
- * Validate a question against the available field IDs.
+ * Questions are the tenant-facing collection layer.
+ * Each question maps to one or more fields (the truth/data layer).
+ * Branches route applicants to different outcomes or follow-up questions
+ * based on the values they provide.
  */
-export function validateQuestion(
-  question: Question,
-  fieldIds: string[],
-): string | null {
-  if (!question.text.trim()) return "Question text is required";
-  if (question.fieldIds.length === 0) return "Link at least one field to this question";
-  for (const fid of question.fieldIds) {
-    if (!fieldIds.includes(fid)) {
-      return `Field "${fid}" not found`;
-    }
-  }
-  return null;
-}
+export type Question = {
+  id: string;
+  text: string;
+  fieldIds: string[];
+  sort_order: number;
+  extract_hint?: string;
+  branches: Branch[];
+};

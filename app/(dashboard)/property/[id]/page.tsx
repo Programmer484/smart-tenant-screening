@@ -6,7 +6,7 @@ import Link from "next/link";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import type { PropertyRecord, PropertyLinks, AiInstructions } from "@/lib/property";
-import { DEFAULT_AI_INSTRUCTIONS, DEFAULT_LINKS, DEFAULT_MAX_FIELDS_PER_QUESTION, resolveAiInstructions } from "@/lib/property";
+import { DEFAULT_AI_INSTRUCTIONS, DEFAULT_LINKS, resolveAiInstructions } from "@/lib/property";
 import type { LandlordField } from "@/lib/landlord-field";
 import {
   isFieldVisibilityRule,
@@ -15,6 +15,7 @@ import {
 } from "@/lib/landlord-rule";
 import type { Question } from "@/lib/question";
 import RulesSection from "@/app/components/RulesSection";
+import FlowEditor from "@/app/components/FlowEditor";
 import { PropertyEditorSkeleton } from "@/app/components/Skeleton";
 import { ConfirmDialog } from "@/app/components/ConfirmDialog";
 import { RuleProposalModal, type Proposal } from "@/app/components/RuleProposalModal";
@@ -46,168 +47,6 @@ function summarizeRule(r: LandlordRule): string {
   return `Require: ${conds}`;
 }
 
-// ─── Question Editor ────────────────────────────────────────────────
-
-function MaxFieldsInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
-  const [draft, setDraft] = useState(String(value));
-
-  useEffect(() => { setDraft(String(value)); }, [value]);
-
-  function commit() {
-    const n = parseInt(draft, 10);
-    if (!Number.isFinite(n) || n < 1) { onChange(1); setDraft("1"); }
-    else if (n > 10) { onChange(10); setDraft("10"); }
-    else { onChange(n); }
-  }
-
-  return (
-    <div className="flex items-center gap-2">
-      <label className="text-[11px] text-foreground/45">Max fields per question</label>
-      <input
-        type="number"
-        min={1}
-        max={10}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
-        className="w-14 rounded-lg border border-foreground/10 bg-[#f7f9f8] px-2 py-1 text-center text-xs text-foreground focus:border-teal-700/40 focus:bg-white focus:outline-none"
-      />
-    </div>
-  );
-}
-
-function QuestionEditor({
-  question,
-  fields,
-  onChange,
-  onDelete,
-  onMoveUp,
-  onMoveDown,
-  isFirst,
-  isLast,
-  maxFields,
-}: {
-  question: Question;
-  fields: LandlordField[];
-  onChange: (q: Question) => void;
-  onDelete: () => void;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
-  isFirst: boolean;
-  isLast: boolean;
-  maxFields?: number;
-}) {
-  const overLimit = maxFields != null && question.fieldIds.length > maxFields;
-  return (
-    <div className={`flex gap-3 rounded-xl border bg-background p-4 shadow-sm ${overLimit ? "border-amber-300" : "border-foreground/10"}`}>
-      {/* Reorder controls */}
-      <div className="flex flex-col items-center gap-0.5 pt-1 text-foreground/30">
-        <button type="button" onClick={onMoveUp} disabled={isFirst} className="rounded p-0.5 transition-colors hover:text-foreground/70 disabled:opacity-20">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 8l4-4 4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
-        </button>
-        <svg width="10" height="14" viewBox="0 0 10 14" fill="none" className="opacity-40">
-          <circle cx="3" cy="3" r="1" fill="currentColor" />
-          <circle cx="7" cy="3" r="1" fill="currentColor" />
-          <circle cx="3" cy="7" r="1" fill="currentColor" />
-          <circle cx="7" cy="7" r="1" fill="currentColor" />
-          <circle cx="3" cy="11" r="1" fill="currentColor" />
-          <circle cx="7" cy="11" r="1" fill="currentColor" />
-        </svg>
-        <button type="button" onClick={onMoveDown} disabled={isLast} className="rounded p-0.5 transition-colors hover:text-foreground/70 disabled:opacity-20">
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
-        </button>
-      </div>
-
-      <div className="flex flex-1 flex-col gap-3">
-        {/* Question text */}
-        <input
-          type="text"
-          value={question.text}
-          onChange={(e) => onChange({ ...question, text: e.target.value })}
-          placeholder="Question text (e.g. How many people will live here?)"
-          className="w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none"
-        />
-
-        {/* Linked fields */}
-        <details className="group" open={question.fieldIds.length === 0}>
-          <summary className="cursor-pointer select-none text-[11px] text-foreground/45 hover:text-foreground/60 transition-colors flex items-center gap-1">
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none" className="transition-transform group-open:rotate-90">
-              <path d="M3 1.5l4 3.5-4 3.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            Linked fields
-            {question.fieldIds.length > 0 && (
-              <span className="ml-1 rounded bg-teal-50 px-1.5 py-0.5 text-[10px] font-bold text-teal-700">
-                {question.fieldIds.length} selected
-              </span>
-            )}
-          </summary>
-          <div className="mt-2 flex flex-wrap gap-1.5 pl-1.5">
-            {fields.map((f) => {
-              const isLinked = question.fieldIds.includes(f.id);
-              return (
-                <button
-                  key={f.id}
-                  type="button"
-                  onClick={() => {
-                    const next = isLinked
-                      ? question.fieldIds.filter((fid) => fid !== f.id)
-                      : [...question.fieldIds, f.id];
-                    onChange({ ...question, fieldIds: next });
-                  }}
-                  className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors border ${
-                    isLinked
-                      ? "border-teal-700/30 bg-teal-50 text-teal-700"
-                      : "border-foreground/10 text-foreground/40 hover:border-foreground/20 hover:text-foreground/60"
-                  }`}
-                >
-                  {f.label || f.id}
-                </button>
-              );
-            })}
-            {fields.length === 0 && (
-              <span className="text-xs text-foreground/35 italic">Add fields first</span>
-            )}
-          </div>
-        </details>
-
-        {overLimit && (
-          <p className="text-[11px] text-amber-600">
-            This question links {question.fieldIds.length} fields (limit is {maxFields}). Consider splitting it.
-          </p>
-        )}
-
-        {/* Extract hint (collapsible) */}
-        <details className="group">
-          <summary className="cursor-pointer text-[11px] text-foreground/35 hover:text-foreground/50 transition-colors">
-            <span className="ml-1">Extraction hint (optional)</span>
-          </summary>
-          <input
-            type="text"
-            value={question.extract_hint || ""}
-            onChange={(e) => onChange({ ...question, extract_hint: e.target.value || undefined })}
-            placeholder="e.g. If they say 'a couple', extract num_adults=2"
-            className="mt-1.5 w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-xs text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none"
-          />
-        </details>
-      </div>
-
-      {/* Delete */}
-      <button
-        type="button"
-        onClick={onDelete}
-        aria-label="Delete question"
-        className="mt-1 shrink-0 rounded-lg p-1.5 text-red-400/70 hover:bg-red-50 hover:text-red-500 transition-colors"
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <path d="M2 4h12M5 4V2.5A1.5 1.5 0 0 1 6.5 1h3A1.5 1.5 0 0 1 11 2.5V4m2 0-.75 9A1.5 1.5 0 0 1 10.75 14.5h-5.5A1.5 1.5 0 0 1 3.75 13L3 4" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" />
-          <path d="M6.5 7v4M9.5 7v4" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
-        </svg>
-      </button>
-    </div>
-  );
-}
-
 // ─── Main Page ──────────────────────────────────────────────────────
 
 export default function PropertySetupPage() {
@@ -221,7 +60,6 @@ export default function PropertySetupPage() {
   const [rules, setRules] = useState<LandlordRule[]>([]);
   const [links, setLinks] = useState<PropertyLinks>(DEFAULT_LINKS);
   const [aiInstructions, setAiInstructions] = useState<AiInstructions>(DEFAULT_AI_INSTRUCTIONS);
-  const [maxFieldsPerQuestion, setMaxFieldsPerQuestion] = useState(DEFAULT_MAX_FIELDS_PER_QUESTION);
 
   const [activeTab, setActiveTab] = useState<Tab>("Questions");
   const [loadingPhase, setLoadingPhase] = useState<null | "questions" | "rules">(null);
@@ -269,20 +107,18 @@ export default function PropertySetupPage() {
       setTitle(p.title);
       setDescription(p.description);
       setFields((p.fields as LandlordField[]) ?? []);
-      setQuestions((p.questions as Question[]) ?? []);
+      setQuestions(((p.questions as Question[]) ?? []).map((q) => ({ ...q, branches: q.branches ?? [] })));
       const migratedRules = migrateRules((p.rules as any[]) ?? []);
       setRules(migratedRules);
       setLinks({ ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) });
       setAiInstructions(resolveAiInstructions(p.ai_instructions));
-      setMaxFieldsPerQuestion(typeof p.max_fields_per_question === "number" ? p.max_fields_per_question : DEFAULT_MAX_FIELDS_PER_QUESTION);
 
       lastSavedRef.current = JSON.stringify({
         title: p.title, description: p.description,
         fields: (p.fields as LandlordField[]) ?? [],
-        questions: (p.questions as Question[]) ?? [],
+        questions: ((p.questions as Question[]) ?? []).map((q) => ({ ...q, branches: q.branches ?? [] })),
         rules: migratedRules, links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) },
         aiInstructions: resolveAiInstructions(p.ai_instructions),
-        maxFieldsPerQuestion: typeof p.max_fields_per_question === "number" ? p.max_fields_per_question : DEFAULT_MAX_FIELDS_PER_QUESTION,
       });
       hasLoadedRef.current = true;
       setPageLoading(false);
@@ -293,9 +129,9 @@ export default function PropertySetupPage() {
   // ── Dirty tracking ──
   useEffect(() => {
     if (pageLoading) return;
-    const current = JSON.stringify({ title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion });
+    const current = JSON.stringify({ title, description, fields, questions, rules, links, aiInstructions });
     setDirty(current !== lastSavedRef.current);
-  }, [title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion, pageLoading, lastSavedRef]);
+  }, [title, description, fields, questions, rules, links, aiInstructions, pageLoading, lastSavedRef]);
 
   useEffect(() => {
     function onBeforeUnload(e: BeforeUnloadEvent) {
@@ -319,7 +155,6 @@ export default function PropertySetupPage() {
           rules,
           links,
           ai_instructions: aiInstructions,
-          max_fields_per_question: maxFieldsPerQuestion,
           updated_at: new Date().toISOString(),
           ...overrides,
         })
@@ -327,7 +162,7 @@ export default function PropertySetupPage() {
       setSaving(false);
       if (error) { console.error("[save]", error); toast.error("Failed to save"); }
       else {
-        lastSavedRef.current = JSON.stringify({ title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion });
+        lastSavedRef.current = JSON.stringify({ title, description, fields, questions, rules, links, aiInstructions });
         setDirty(false);
         if (savedIndicatorTimerRef.current) clearTimeout(savedIndicatorTimerRef.current);
         setShowSaved(true);
@@ -337,7 +172,7 @@ export default function PropertySetupPage() {
         }, 2000);
       }
     },
-    [id, title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion, supabase], // eslint-disable-line react-hooks/exhaustive-deps
+    [id, title, description, fields, questions, rules, links, aiInstructions, supabase], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   saveRef.current = save;
@@ -357,7 +192,7 @@ export default function PropertySetupPage() {
   }, [save]);
 
   serializedStateRef.current = JSON.stringify({
-    title, description, fields, questions, rules, links, aiInstructions, maxFieldsPerQuestion,
+    title, description, fields, questions, rules, links, aiInstructions,
   });
 
   // Debounced autosave (2s after last edit while dirty)
@@ -382,7 +217,6 @@ export default function PropertySetupPage() {
     rules,
     links,
     aiInstructions,
-    maxFieldsPerQuestion,
     pageLoading,
     loadingPhase,
     dirty,
@@ -412,7 +246,6 @@ export default function PropertySetupPage() {
             rules: state.rules,
             links: state.links,
             ai_instructions: state.aiInstructions,
-            max_fields_per_question: state.maxFieldsPerQuestion,
             updated_at: new Date().toISOString(),
           })
           .eq("id", id)
@@ -441,7 +274,6 @@ export default function PropertySetupPage() {
           existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
           existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
           existingVisibilityRules: existingVisRules,
-          maxFieldsPerQuestion,
         }),
       });
       const data = await res.json();
@@ -537,7 +369,6 @@ export default function PropertySetupPage() {
              existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
              existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
              existingVisibilityRules: existingVisRules,
-             maxFieldsPerQuestion,
           })
         });
         const data2 = await res2.json();
@@ -608,7 +439,7 @@ export default function PropertySetupPage() {
           if (idx >= 0) {
             next[idx] = { ...next[idx], text: pq.text, fieldIds: pq.fieldIds, extract_hint: pq.extract_hint };
           } else {
-            newQs.push(pq);
+            newQs.push({ ...pq, branches: pq.branches ?? [] });
           }
         }
 
@@ -699,31 +530,6 @@ export default function PropertySetupPage() {
     });
     setRules((prev) => prev.filter((r) => !ruleReferencesField(r, fid)));
     setFields((prev) => prev.filter((_, i) => i !== index));
-  }
-
-  // ── Question helpers ──
-  function addQuestion() {
-    setQuestions((prev) => [
-      ...prev,
-      { id: `q_${generateId()}`, text: "", fieldIds: [], sort_order: prev.length },
-    ]);
-  }
-
-  function updateQuestion(index: number, updated: Question) {
-    setQuestions((prev) => prev.map((q, i) => (i === index ? updated : q)));
-  }
-
-  function deleteQuestion(index: number) {
-    setQuestions((prev) => prev.filter((_, i) => i !== index));
-  }
-
-  function moveQuestion(from: number, to: number) {
-    setQuestions((prev) => {
-      const next = [...prev];
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return next.map((q, i) => ({ ...q, sort_order: i }));
-    });
   }
 
   // ── Rendering ──
@@ -901,13 +707,6 @@ export default function PropertySetupPage() {
             {/* ── Questions Tab ── */}
             {activeTab === "Questions" && (
               <div className="space-y-4">
-                <div>
-                  <h3 className="text-sm font-medium text-foreground/80">Interview flow</h3>
-                  <p className="text-xs text-foreground/40">
-                    Ordered questions asked to applicants. Each question collects one or more fields. Toggle field chips to link them.
-                  </p>
-                </div>
-
                 {/* Generate prompt */}
                 <div className="flex gap-2">
                   <input
@@ -936,36 +735,11 @@ export default function PropertySetupPage() {
                   </button>
                 </div>
 
-                {/* Question list */}
-                <div className="space-y-2">
-                  {questions.map((q, i) => (
-                    <QuestionEditor
-                      key={q.id}
-                      question={q}
-                      fields={fields}
-                      onChange={(updated) => updateQuestion(i, updated)}
-                      onDelete={() => deleteQuestion(i)}
-                      onMoveUp={() => moveQuestion(i, i - 1)}
-                      onMoveDown={() => moveQuestion(i, i + 1)}
-                      isFirst={i === 0}
-                      isLast={i === questions.length - 1}
-                      maxFields={maxFieldsPerQuestion}
-                    />
-                  ))}
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <button
-                    type="button"
-                    onClick={addQuestion}
-                    className="flex items-center gap-1.5 rounded-lg border border-dashed border-foreground/20 px-4 py-2 text-sm text-foreground/50 transition-colors hover:border-foreground/40 hover:text-foreground/70"
-                  >
-                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-                    Add question
-                  </button>
-
-                  <MaxFieldsInput value={maxFieldsPerQuestion} onChange={setMaxFieldsPerQuestion} />
-                </div>
+                <FlowEditor
+                  questions={questions}
+                  fields={fields}
+                  onChange={setQuestions}
+                />
               </div>
             )}
 

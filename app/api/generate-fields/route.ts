@@ -11,7 +11,7 @@ import {
 import type { Question } from "@/lib/question";
 import { type LandlordRule, OPERATORS_BY_KIND } from "@/lib/landlord-rule";
 import { callClaude, ClaudeApiError, extractText, stripCodeFences } from "@/lib/anthropic";
-import { DEFAULT_MAX_FIELDS_PER_QUESTION } from "@/lib/property";
+const DEFAULT_MAX_FIELDS_PER_QUESTION = 3;
 
 const DEBUG = process.env.NODE_ENV !== "production";
 
@@ -186,6 +186,7 @@ function parseGeneratedQuestion(v: unknown): Question | null {
     fieldIds,
     sort_order: 0,
     extract_hint: typeof q.extract_hint === "string" ? q.extract_hint : undefined,
+    branches: [],
   };
 }
 

@@ -159,6 +159,19 @@ const DATE_OP_PHRASES: Record<string, string> = {
   "<=":  "is on or before",
 };
 
+/** Evaluates a single branch condition against the current answers. Returns false if the field is unanswered. */
+export function evalBranchCondition(
+  condition: { fieldId: string; operator: string; value: string },
+  fields: LandlordField[],
+  answers: Record<string, string>,
+): boolean {
+  const actual = answers[condition.fieldId];
+  if (actual === undefined) return false;
+  const field = fields.find((f) => f.id === condition.fieldId);
+  if (!field) return false;
+  return satisfies(actual, condition.operator, condition.value, field.value_kind);
+}
+
 /** Human-readable description of a rule, e.g. "Monthly income is at most 3000 AND Credit is less than 600" */
 export function describeViolation(v: RuleViolation, fields: LandlordField[]): string {
   if (v.message) return v.message;

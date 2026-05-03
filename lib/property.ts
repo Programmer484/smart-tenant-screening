@@ -42,8 +42,6 @@ export function resolveAiInstructions(
   return { ...DEFAULT_AI_INSTRUCTIONS, ...raw };
 }
 
-export const DEFAULT_MAX_FIELDS_PER_QUESTION = 3;
-
 /** Raw shape as stored in the `properties` table */
 export type PropertyRecord = {
   id: string;
@@ -52,14 +50,12 @@ export type PropertyRecord = {
   description: string;
   /** Canonical data fields (the truth layer) */
   fields: LandlordField[];
-  /** Ordered questions for the interview flow (maps to fields via fieldIds) */
+  /** Ordered questions for the interview flow, with conditional branches */
   questions: Question[];
-  /** Deterministic rules over fields */
+  /** Deterministic reject/require rules evaluated after the interview completes */
   rules: LandlordRule[];
   links: PropertyLinks;
   ai_instructions: AiInstructions;
-  /** AI + UI cap for how many fields one question may collect */
-  max_fields_per_question: number;
   created_at: string;
   updated_at: string;
 };
