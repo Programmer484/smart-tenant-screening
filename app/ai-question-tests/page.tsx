@@ -3,6 +3,8 @@
 import { useState, useEffect } from "react";
 import type { TestCase } from "@/lib/testing/aiQuestionTestCases";
 import type { TestResult } from "@/lib/testing/runner";
+import { ProposalReviewContent } from "@/app/components/RuleProposalModal";
+import type { Proposal } from "@/app/components/RuleProposalModal";
 
 export default function AiQuestionTestsPage() {
   const [tests, setTests] = useState<Omit<TestCase, "mockOutput">[]>([]);
@@ -35,7 +37,7 @@ export default function AiQuestionTestsPage() {
 
   const handleSelectAll = () => {
     if (selectedIds.size === tests.length) {
-      setSelectedIds(newSet());
+      setSelectedIds(new Set());
     } else {
       setSelectedIds(new Set(tests.map((t) => t.id)));
     }
@@ -47,9 +49,6 @@ export default function AiQuestionTestsPage() {
     setRunning(true);
     setError(null);
     try {
-      // Run sequentially one by one instead of all at once to match the requirement "sequential execution"
-      // Actually the backend runner already executes sequentially, we can just pass all ids to the backend.
-      // However, to show individual progress, we could call an endpoint per test. For now, calling the bulk endpoint.
       const res = await fetch("/api/testing/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -102,7 +101,7 @@ export default function AiQuestionTestsPage() {
   };
 
   return (
-    <div className="max-w-6xl mx-auto p-6 space-y-8">
+    <div className="max-w-7xl mx-auto p-6 space-y-8">
       <div>
         <h1 className="text-3xl font-bold text-gray-900 mb-2">AI Question Generation Test Harness</h1>
         <p className="text-gray-600">
@@ -188,6 +187,15 @@ export default function AiQuestionTestsPage() {
               if (r.testId !== activeTabId) return null;
               const testCase = tests.find((t) => t.id === r.testId);
               
+              const mappedProposal: Proposal = {
+                newRules: r.output?.newRules || [],
+                modifiedRules: r.output?.modifiedRules || [],
+                deletedRuleIds: r.output?.deletedRuleIds || [],
+                newFields: r.output?.newFields || [],
+                proposedQuestions: r.output?.questions || [],
+                deletedQuestionIds: r.output?.deletedQuestionIds || [],
+              };
+              
               return (
                 <div key={r.testId} className="space-y-8">
                   {/* Header / Top level status */}
@@ -212,8 +220,8 @@ export default function AiQuestionTestsPage() {
                     )}
                   </div>
 
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    {/* Left Column: Test Case Data */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+                    {/* Left Column: Test Case Data and Evaluator Details */}
                     <div className="space-y-6">
                       <section>
                         <h4 className="text-sm font-semibold uppercase tracking-wider text-gray-500 mb-2">Test Case</h4>
@@ -230,6 +238,18 @@ export default function AiQuestionTestsPage() {
                               "{testCase?.prompt}"
                             </div>
                           </div>
+                          {testCase?.variables && Object.keys(testCase.variables).length > 0 && (
+                            <div>
+                              <span className="font-semibold text-gray-700">Variables Context:</span>
+                              <div className="mt-1 p-3 bg-white border rounded text-gray-800 font-mono text-xs">
+                                {Object.entries(testCase.variables).map(([key, value]) => (
+                                  <div key={key}>
+                                    <span className="text-blue-600">{`{{${key}}}`}</span>: {value}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                           <div>
                             <span className="font-semibold text-gray-700">Requirements:</span>
                             <ul className="list-disc pl-5 mt-1 space-y-1">
@@ -241,17 +261,7 @@ export default function AiQuestionTestsPage() {
                         </div>
                       </section>
 
-                      <section>
-                        <h4 className="text-sm font-semibold uppercase tracking-wider text-gray-500 mb-2">Generated Output (JSON)</h4>
-                        <pre className="bg-gray-900 text-gray-100 p-4 rounded-lg text-xs overflow-x-auto">
-                          {JSON.stringify(r.output, null, 2)}
-                        </pre>
-                      </section>
-                    </div>
-
-                    {/* Right Column: Evaluator Details */}
-                    {r.evaluation && (
-                      <div className="space-y-6">
+                      {r.evaluation && (
                         <section>
                           <h4 className="text-sm font-semibold uppercase tracking-wider text-gray-500 mb-2">Evaluation Details</h4>
                           
@@ -307,8 +317,24 @@ export default function AiQuestionTestsPage() {
                             </div>
                           )}
                         </section>
-                      </div>
-                    )}
+                      )}
+                    </div>
+
+                    {/* Right Column: Generated Output UI */}
+                    <div className="sticky top-6">
+                      <section>
+                        <h4 className="text-sm font-semibold uppercase tracking-wider text-gray-500 mb-2">Generated Output</h4>
+                        <div className="rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+                          <ProposalReviewContent 
+                            proposal={mappedProposal}
+                            existingRules={[]}
+                            existingQuestions={[]}
+                            existingFields={[]}
+                            showActions={false}
+                          />
+                        </div>
+                      </section>
+                    </div>
                   </div>
                 </div>
               );

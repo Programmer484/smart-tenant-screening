@@ -43,12 +43,16 @@ export async function evaluateOutput(
   testCase: TestCase,
   output: AIQuestionOutput
 ): Promise<EvaluationResult> {
+  const variablesBlock = testCase.variables 
+    ? `\nVariables Context:\n${Object.entries(testCase.variables).map(([k, v]) => `- {{${k}}}: ${v}`).join("\n")}\n` 
+    : "";
+
   const userPrompt = `Test Case Name: ${testCase.name}
 
 Description: ${testCase.description}
 
 Prompt (User Intent): ${testCase.prompt}
-
+${variablesBlock}
 Requirements:
 ${testCase.requirements.map(r => `- ${r}`).join("\n")}
 

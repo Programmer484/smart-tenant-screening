@@ -95,6 +95,41 @@ export function RuleProposalModal({
 
   if (!open || !proposal) return null;
 
+  return (
+    <dialog
+      ref={dialogRef}
+      onClose={onCancel}
+      className="fixed inset-0 z-50 m-auto max-w-xl rounded-xl border border-black/8 bg-white p-0 shadow-xl backdrop:bg-black/40"
+    >
+      <ProposalReviewContent 
+        proposal={proposal}
+        existingRules={existingRules}
+        existingQuestions={existingQuestions}
+        existingFields={existingFields}
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+      />
+    </dialog>
+  );
+}
+
+export function ProposalReviewContent({
+  proposal,
+  existingRules,
+  existingQuestions,
+  existingFields,
+  onConfirm,
+  onCancel,
+  showActions = true,
+}: {
+  proposal: Proposal;
+  existingRules: LandlordRule[];
+  existingQuestions: Question[];
+  existingFields?: LandlordField[];
+  onConfirm?: () => void;
+  onCancel?: () => void;
+  showActions?: boolean;
+}) {
   const hasRuleChanges = proposal.newRules.length > 0 || proposal.modifiedRules.length > 0 || proposal.deletedRuleIds.length > 0;
   const hasFieldChanges = proposal.newFields.length > 0;
   const hasQuestionChanges = proposal.proposedQuestions.length > 0 || proposal.deletedQuestionIds.length > 0;
@@ -110,24 +145,19 @@ export function RuleProposalModal({
     .filter((q): q is Question => q != null);
 
   return (
-    <dialog
-      ref={dialogRef}
-      onClose={onCancel}
-      className="fixed inset-0 z-50 m-auto max-w-xl rounded-xl border border-black/8 bg-white p-0 shadow-xl backdrop:bg-black/40"
-    >
-      <div className="flex max-h-[85vh] flex-col">
-        <div className="border-b border-black/5 p-6 pb-4">
-          <h3 className="text-lg font-semibold text-[#1a2e2a]">Review Proposed Changes</h3>
-          <p className="mt-1 text-sm text-[#1a2e2a]/60">
-            {hasFieldChanges
-              ? "The AI proposed changes that include new fields. Please review everything below."
-              : hasQuestionChanges && !hasRuleChanges
-                ? "Please review the proposed question changes."
-                : "Please review the proposed changes."}
-          </p>
-        </div>
+    <div className="flex max-h-[85vh] flex-col h-full bg-white">
+      <div className="border-b border-black/5 p-6 pb-4">
+        <h3 className="text-lg font-semibold text-[#1a2e2a]">Review Proposed Changes</h3>
+        <p className="mt-1 text-sm text-[#1a2e2a]/60">
+          {hasFieldChanges
+            ? "The AI proposed changes that include new fields. Please review everything below."
+            : hasQuestionChanges && !hasRuleChanges
+              ? "Please review the proposed question changes."
+              : "Please review the proposed changes."}
+        </p>
+      </div>
 
-        <div className="overflow-y-auto p-6 flex flex-col gap-6">
+      <div className="overflow-y-auto p-6 flex flex-col gap-6 flex-1">
           {/* Deleted Rules */}
           {proposal.deletedRuleIds.length > 0 && (
             <div>
@@ -307,24 +337,25 @@ export function RuleProposalModal({
           )}
         </div>
 
-        <div className="border-t border-black/5 p-6 pt-4 flex justify-end gap-3 bg-[#f7f9f8]/50">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="rounded-lg border border-black/10 px-4 py-2 text-sm text-[#1a2e2a]/60 transition-colors hover:bg-black/5"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={!hasChanges}
-            className="rounded-lg bg-teal-700 px-5 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 shadow-sm disabled:opacity-50"
-          >
-            Accept & Apply
-          </button>
-        </div>
+        {showActions && (
+          <div className="border-t border-black/5 p-6 pt-4 flex justify-end gap-3 bg-[#f7f9f8]/50">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="rounded-lg border border-black/10 px-4 py-2 text-sm text-[#1a2e2a]/60 transition-colors hover:bg-black/5"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={onConfirm}
+              disabled={!hasChanges}
+              className="rounded-lg bg-teal-700 px-5 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 shadow-sm disabled:opacity-50"
+            >
+              Accept & Apply
+            </button>
+          </div>
+        )}
       </div>
-    </dialog>
-  );
+    );
 }
