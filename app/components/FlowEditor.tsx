@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { FieldPickerPopover } from "@/app/components/FieldPickerPopover";
 import type { Question, Branch, BranchOutcome } from "@/lib/question";
 import type { LandlordField } from "@/lib/landlord-field";
 import { OPERATORS_BY_KIND, defaultOperatorForKind, defaultValueForKind } from "@/lib/landlord-rule";
@@ -43,6 +44,18 @@ function pathsEqual(a: NavPath, b: NavPath) {
     a.length === b.length &&
     a.every((s, i) => s.questionId === b[i].questionId && s.branchId === b[i].branchId)
   );
+}
+
+function flattenQuestions(qs: Question[]): Question[] {
+  const out: Question[] = [];
+  function walk(list: Question[]) {
+    for (const q of list) {
+      out.push(q);
+      for (const b of q.branches) walk(b.subQuestions);
+    }
+  }
+  walk(qs);
+  return out;
 }
 
 function getAtPath(rootQs: Question[], path: NavPath): Question | null {
@@ -205,12 +218,25 @@ export default function FlowEditor({
   const [focusedPath, setFocusedPath] = useState<NavPath>([]);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [activeBranchId, setActiveBranchId] = useState<string | null>(null);
+  const [fieldPickerOpen, setFieldPickerOpen] = useState(false);
+  const [fieldPickerAnchor, setFieldPickerAnchor] = useState<DOMRect | null>(null);
+  const fieldPickerBtnRef = useRef<HTMLButtonElement>(null);
 
   const focusedIds = new Set(focusedPath.map((s) => s.questionId));
   const treeItems = buildTree(questions, [], expandedIds, focusedPath, [], 0);
   const focusedQuestion = getAtPath(questions, focusedPath);
   const currentItem = treeItems.find((t) => pathsEqual(t.path, focusedPath));
   const activeBranch = focusedQuestion?.branches.find((b) => b.id === activeBranchId) ?? null;
+
+  const lockedFieldIds = useMemo(() => {
+    if (!focusedQuestion) return new Set<string>();
+    const set = new Set<string>();
+    for (const q of flattenQuestions(questions)) {
+      if (q.id === focusedQuestion.id) continue;
+      for (const id of q.fieldIds) set.add(id);
+    }
+    return set;
+  }, [questions, focusedQuestion?.id]);
 
   // Build ancestor list (all path steps except the last)
   type Ancestor = { question: Question; branch?: Branch; label: string; path: NavPath };
@@ -431,34 +457,51 @@ export default function FlowEditor({
               />
 
               {/* Linked fields */}
-              <div className="mb-4 flex flex-wrap gap-1.5">
-                {fields.map((f) => {
-                  const linked = focusedQuestion.fieldIds.includes(f.id);
-                  return (
-                    <button
-                      key={f.id}
-                      type="button"
-                      onClick={() =>
-                        mutate((q) => ({
-                          ...q,
-                          fieldIds: linked
-                            ? q.fieldIds.filter((id) => id !== f.id)
-                            : [...q.fieldIds, f.id],
-                        }))
-                      }
-                      className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${
-                        linked
-                          ? "border-emerald-300 bg-emerald-50 text-emerald-800"
-                          : "border-zinc-200 text-zinc-400 hover:border-zinc-300 hover:text-zinc-600"
-                      }`}
-                    >
-                      {f.id}
-                    </button>
-                  );
-                })}
-                {fields.length === 0 && (
-                  <span className="text-[11px] italic text-zinc-400">Add fields first</span>
-                )}
+              <div className="mb-4">
+                <p className="mb-1.5 text-[10px] text-zinc-400">Linked fields</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    ref={fieldPickerBtnRef}
+                    type="button"
+                    onClick={() => {
+                      setFieldPickerAnchor(fieldPickerBtnRef.current?.getBoundingClientRect() ?? null);
+                      setFieldPickerOpen(true);
+                    }}
+                    disabled={fields.length === 0}
+                    className="rounded-lg border border-emerald-200 bg-emerald-50/50 px-3 py-1.5 text-left text-[11px] font-medium text-emerald-900 transition-colors hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {fields.length === 0
+                      ? "Add fields in the Fields tab first"
+                      : focusedQuestion.fieldIds.length === 0
+                        ? "Link fields…"
+                        : `Edit linked fields (${focusedQuestion.fieldIds.length})`}
+                  </button>
+                  {focusedQuestion.fieldIds.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {focusedQuestion.fieldIds.map((fid) => {
+                        const f = fields.find((x) => x.id === fid);
+                        return (
+                          <span
+                            key={fid}
+                            title={fid}
+                            className="rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-[11px] font-medium text-emerald-800"
+                          >
+                            {f?.label || f?.id || fid}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+                <FieldPickerPopover
+                  open={fieldPickerOpen && fields.length > 0}
+                  anchorRect={fieldPickerAnchor}
+                  fields={fields}
+                  selectedIds={focusedQuestion.fieldIds}
+                  lockedFieldIds={lockedFieldIds}
+                  onChange={(next) => mutate((q) => ({ ...q, fieldIds: next }))}
+                  onClose={() => setFieldPickerOpen(false)}
+                />
               </div>
 
               {/* Branch tabs */}
