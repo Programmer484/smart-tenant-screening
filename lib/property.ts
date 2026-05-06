@@ -46,6 +46,7 @@ export function resolveAiInstructions(
 export type PropertyRecord = {
   id: string;
   user_id: string;
+  slug: string;
   title: string;
   description: string;
   /** Canonical data fields (the truth layer) */

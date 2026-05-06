@@ -209,10 +209,12 @@ export default function FlowEditor({
   questions,
   fields,
   onChange,
+  onCreateField,
 }: {
   questions: Question[];
   fields: LandlordField[];
   onChange: (qs: Question[]) => void;
+  onCreateField?: (label: string) => string;
 }) {
   const [focusedPath, setFocusedPath] = useState<NavPath>([]);
   const [activeBranchId, setActiveBranchId] = useState<string | null>(null);
@@ -475,6 +477,10 @@ export default function FlowEditor({
                   lockedFieldIds={lockedFieldIds}
                   onChange={(next) => mutate((q) => ({ ...q, fieldIds: next }))}
                   onClose={() => setFieldPickerOpen(false)}
+                  onCreateField={onCreateField ? (label) => {
+                    const newId = onCreateField(label);
+                    mutate((q) => ({ ...q, fieldIds: [...q.fieldIds, newId] }));
+                  } : undefined}
                 />
               </div>
 

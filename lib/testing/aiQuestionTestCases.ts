@@ -263,6 +263,7 @@ export const testCases: TestCase[] = [
       "Must collect a boolean field asking if the applicant has children",
       "Must have a conditional branch that triggers ONLY if they have children",
       "The child branch must collect a number field for the child's age",
+      "Must generate rejection branches to reject applicants who do not have children, or whose child is under 8, or whose child is over 15",
       "Must generate separate, distinct text fields for the names and jobs of exactly 3 occupants (occupant_1_name, occupant_1_job, etc.)",
       "Must ask a question collecting the relationship between the occupants",
       "Must NOT use nested arrays or object data structures for occupants"
@@ -287,6 +288,12 @@ export const testCases: TestCase[] = [
           sort_order: 0,
           branches: [
             {
+              id: "b_no_children",
+              condition: { fieldId: "has_children", operator: "==", value: "false" },
+              outcome: "reject",
+              subQuestions: []
+            },
+            {
               id: "b_has_children",
               condition: { fieldId: "has_children", operator: "==", value: "true" },
               outcome: "followups",
@@ -296,7 +303,20 @@ export const testCases: TestCase[] = [
                   text: "How old is your child?",
                   fieldIds: ["child_age"],
                   sort_order: 0,
-                  branches: []
+                  branches: [
+                    {
+                      id: "b_child_too_young",
+                      condition: { fieldId: "child_age", operator: "<", value: "8" },
+                      outcome: "reject",
+                      subQuestions: []
+                    },
+                    {
+                      id: "b_child_too_old",
+                      condition: { fieldId: "child_age", operator: ">", value: "15" },
+                      outcome: "reject",
+                      subQuestions: []
+                    }
+                  ]
                 }
               ]
             }
@@ -313,29 +333,6 @@ export const testCases: TestCase[] = [
           ],
           sort_order: 1,
           branches: []
-        }
-      ],
-      newRules: [
-        {
-          id: "rule_require_children",
-          kind: "reject",
-          conditions: [
-            { id: "cond_no_kids", fieldId: "has_children", operator: "==", value: "false" }
-          ]
-        },
-        {
-          id: "rule_child_too_young",
-          kind: "reject",
-          conditions: [
-            { id: "cond_age_young", fieldId: "child_age", operator: "<", value: "8" }
-          ]
-        },
-        {
-          id: "rule_child_too_old",
-          kind: "reject",
-          conditions: [
-            { id: "cond_age_old", fieldId: "child_age", operator: ">", value: "15" }
-          ]
         }
       ],
       deletedQuestionIds: []

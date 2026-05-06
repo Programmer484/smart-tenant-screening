@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
 import { ApplicantsTableSkeleton } from "@/app/components/Skeleton";
 import { ConfirmDialog } from "@/app/components/ConfirmDialog";
+import { ShareLinkModal } from "@/app/components/ShareLinkModal";
 
 type Session = {
   id: string;
@@ -65,7 +66,8 @@ export default function ApplicantsPage() {
   const [chatLoading, setChatLoading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; title: string } | null>(null);
-  const [propertyContext, setPropertyContext] = useState<{ id: string; title: string } | null>(null);
+  const [propertyContext, setPropertyContext] = useState<{ id: string; title: string; slug?: string } | null>(null);
+  const [shareModalOpen, setShareModalOpen] = useState(false);
 
   const propertyId = typeof window !== "undefined"
     ? new URLSearchParams(window.location.search).get("property")
@@ -81,8 +83,8 @@ export default function ApplicantsPage() {
 
       if (propertyId) {
         query = query.eq("property_id", propertyId);
-        supabase.from("properties").select("id,title").eq("id", propertyId).single()
-          .then(({ data }) => { if (data) setPropertyContext({ id: data.id, title: data.title }); });
+        supabase.from("properties").select("id,title,slug").eq("id", propertyId).single()
+          .then(({ data }) => { if (data) setPropertyContext({ id: data.id, title: data.title, slug: data.slug }); });
       }
 
       const { data, error } = await query;
@@ -95,9 +97,7 @@ export default function ApplicantsPage() {
 
   async function copyChatLink() {
     if (!propertyContext) return;
-    const url = `${window.location.origin}/chat/${propertyContext.id}`;
-    await navigator.clipboard.writeText(url);
-    toast.success("Chat link copied");
+    setShareModalOpen(true);
   }
 
   function togglePanel(sessionId: string, type: "answers" | "chat") {
@@ -324,6 +324,13 @@ export default function ApplicantsPage() {
         onConfirm={() => deleteTarget && void deleteSession(deleteTarget.id)}
         onCancel={() => setDeleteTarget(null)}
       />
+      {propertyContext && (
+        <ShareLinkModal 
+          open={shareModalOpen} 
+          slug={propertyContext.slug || propertyContext.id} 
+          onClose={() => setShareModalOpen(false)} 
+        />
+      )}
     </main>
   );
 }

@@ -21,6 +21,7 @@ export function FieldPickerPopover({
   lockedReason,
   onChange,
   onClose,
+  onCreateField,
 }: {
   open: boolean;
   anchorRect: DOMRect | null;
@@ -34,6 +35,7 @@ export function FieldPickerPopover({
   lockedReason?: string;
   onChange: (next: string[]) => void;
   onClose: () => void;
+  onCreateField?: (label: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -212,13 +214,24 @@ export function FieldPickerPopover({
 
       <div className="flex items-center justify-between border-t border-black/5 px-3 py-2 text-[11px] text-foreground/45">
         <span>{selectedIds.length} selected</span>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded px-2 py-0.5 text-foreground/55 transition-colors hover:bg-black/5"
-        >
-          Done
-        </button>
+        <div className="flex items-center gap-1">
+          {onCreateField && (
+            <button
+              type="button"
+              onClick={() => onCreateField(query)}
+              className="rounded px-2 py-0.5 text-teal-700 transition-colors hover:bg-teal-50"
+            >
+              + Create field
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded px-2 py-0.5 text-foreground/55 transition-colors hover:bg-black/5"
+          >
+            Done
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -3,19 +3,29 @@
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 
-export async function createNewProperty() {
+export async function createNewProperty(formData: FormData) {
+  const title = (formData.get("title") as string) || "New Property";
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
   const { data, error } = await supabase
     .from("properties")
-    .insert({ user_id: user.id, title: "New Property" })
+    .insert({ user_id: user.id, title, slug })
     .select("id")
     .single();
 
-  if (error || !data) throw new Error("Failed to create property");
-  redirect(`/property/${data.id}`);
+  if (error) {
+    if (error.code === '23505') {
+      throw new Error("A property with this name already exists.");
+    }
+    throw new Error("Failed to create property");
+  }
+  if (!data) throw new Error("Failed to create property");
+  
+  return { id: data.id };
 }
 
 export async function deleteProperty(formData: FormData) {

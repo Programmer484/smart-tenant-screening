@@ -18,6 +18,7 @@ import RulesSection from "@/app/components/RulesSection";
 import FlowEditor from "@/app/components/FlowEditor";
 import { PropertyEditorSkeleton } from "@/app/components/Skeleton";
 import { ConfirmDialog } from "@/app/components/ConfirmDialog";
+import { ShareLinkModal } from "@/app/components/ShareLinkModal";
 import { RuleProposalModal, type Proposal } from "@/app/components/RuleProposalModal";
 import LandlordFieldsSection from "@/app/components/LandlordFieldsSection";
 
@@ -60,6 +61,8 @@ export default function PropertySetupPage() {
   const [rules, setRules] = useState<LandlordRule[]>([]);
   const [links, setLinks] = useState<PropertyLinks>(DEFAULT_LINKS);
   const [aiInstructions, setAiInstructions] = useState<AiInstructions>(DEFAULT_AI_INSTRUCTIONS);
+  const [slug, setSlug] = useState("");
+  const [shareModalOpen, setShareModalOpen] = useState(false);
 
   const [activeTab, setActiveTab] = useState<Tab>("Questions");
   const [loadingPhase, setLoadingPhase] = useState<null | "questions" | "rules">(null);
@@ -112,6 +115,7 @@ export default function PropertySetupPage() {
       setRules(migratedRules);
       setLinks({ ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) });
       setAiInstructions(resolveAiInstructions(p.ai_instructions));
+      setSlug(p.slug || id);
 
       lastSavedRef.current = JSON.stringify({
         title: p.title, description: p.description,
@@ -145,10 +149,15 @@ export default function PropertySetupPage() {
   const save = useCallback(
     async (overrides?: Partial<PropertyRecord>) => {
       setSaving(true);
+      
+      const newTitle = title.trim() || "New Property";
+      const newSlug = newTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
       const { error } = await supabase
         .from("properties")
         .update({
-          title: title.trim() || "New Property",
+          title: newTitle,
+          slug: newSlug,
           description: description.trim(),
           fields,
           questions,
@@ -160,8 +169,16 @@ export default function PropertySetupPage() {
         })
         .eq("id", id);
       setSaving(false);
-      if (error) { console.error("[save]", error); toast.error("Failed to save"); }
+      if (error) { 
+        console.error("[save]", error); 
+        if (error.code === '23505') {
+            toast.error("A property with this name already exists. Please choose a unique name.");
+        } else {
+            toast.error("Failed to save"); 
+        }
+      }
       else {
+        setSlug(newSlug);
         lastSavedRef.current = JSON.stringify({ title, description, fields, questions, rules, links, aiInstructions });
         setDirty(false);
         if (savedIndicatorTimerRef.current) clearTimeout(savedIndicatorTimerRef.current);
@@ -517,12 +534,6 @@ export default function PropertySetupPage() {
 
   const isNew = !description.trim() && fields.length === 0 && questions.length === 0 && rules.length === 0;
 
-  async function copyShareLink() {
-    const url = `${window.location.origin}/chat/${id}`;
-    await navigator.clipboard.writeText(url);
-    toast.success("Chat link copied — share it with applicants");
-  }
-
   return (
     <>
       {/* ── Sticky sub-header ─────────────────────────────────────────── */}
@@ -557,7 +568,7 @@ export default function PropertySetupPage() {
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
-            <button type="button" onClick={() => void copyShareLink()} className="flex items-center gap-1.5 rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/50 transition-colors hover:bg-[#f7f9f8] hover:text-[#1a2e2a]">
+            <button type="button" onClick={() => setShareModalOpen(true)} className="flex items-center gap-1.5 rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/50 transition-colors hover:bg-[#f7f9f8] hover:text-[#1a2e2a]">
               <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden>
                 <path d="M10.5 5h-1a2 2 0 0 0-2 2v0a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v0a2 2 0 0 0-2-2ZM4.5 5h-1a2 2 0 0 0-2 2v0a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v0a2 2 0 0 0-2-2ZM5 7h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
               </svg>
@@ -567,7 +578,7 @@ export default function PropertySetupPage() {
               type="button"
               onClick={async () => {
                 await flushSave();
-                window.open(`/chat/${id}`, "_blank");
+                window.open(`/chat/${slug}`, "_blank");
               }}
               className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90"
             >
@@ -711,6 +722,24 @@ export default function PropertySetupPage() {
                   questions={questions}
                   fields={fields}
                   onChange={setQuestions}
+                  onCreateField={(label) => {
+                    const baseId = label
+                      ? label.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim().replace(/\s+/g, "_").slice(0, 40)
+                      : "new_field";
+                    let newId = baseId || "new_field";
+                    if (fields.some(f => f.id === newId)) {
+                      newId = `${newId}_${generateId()}`;
+                    }
+                    const newField = {
+                      id: newId,
+                      label: label || "New Field",
+                      value_kind: "text" as const,
+                      _isNew: true,
+                      _clientId: generateId()
+                    } as unknown as LandlordField;
+                    setFields(prev => [...prev, newField]);
+                    return newId;
+                  }}
                 />
               </div>
             )}
@@ -904,6 +933,12 @@ export default function PropertySetupPage() {
         destructive
         onConfirm={() => confirmDeleteField()}
         onCancel={() => setFieldDeleteIndex(null)}
+      />
+      {/* Share Link Modal */}
+      <ShareLinkModal 
+        open={shareModalOpen} 
+        slug={slug} 
+        onClose={() => setShareModalOpen(false)} 
       />
     </>
   );
