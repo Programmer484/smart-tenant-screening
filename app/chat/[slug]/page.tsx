@@ -55,7 +55,7 @@ function ExtractionLog({ extracted }: { extracted: Extraction[] }) {
 }
 
 export default function ChatPage() {
-  const { id: propertyId } = useParams<{ id: string }>();
+  const { slug } = useParams<{ slug: string }>();
   const supabase = createClient();
 
   const [config, setConfig] = useState<ChatConfig | null>(null);
@@ -72,6 +72,11 @@ export default function ChatPage() {
   const [showDebug] = useState(() =>
     typeof window !== "undefined" &&
     new URLSearchParams(window.location.search).get("debug") === "1"
+  );
+  const [tenantName] = useState(() =>
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("name")
+      : null
   );
 
   const [restartDialogOpen, setRestartDialogOpen] = useState(false);
@@ -102,8 +107,12 @@ export default function ChatPage() {
     document.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${maxAge}; Path=/; SameSite=Lax`;
   }
 
-  async function fetchGreeting(cfg: ChatConfig, sid: string) {
+  async function fetchGreeting(cfg: ChatConfig, sid: string, initialAnswers: Record<string, string>) {
     try {
+      const prompt = tenantName 
+        ? `(new conversation — the applicant's name is ${tenantName}. greet them by name and ask the next screening question)`
+        : `(new conversation — very concisely introduce yourself and ask the first screening question)`;
+      
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -115,15 +124,15 @@ export default function ChatPage() {
           rules: cfg.rules,
           links: cfg.links,
           aiInstructions: cfg.aiInstructions,
-          answers: {},
-          messages: [{ role: "user", content: "(new conversation — very concisely introduce yourself and ask the first screening question)" }],
+          answers: initialAnswers,
+          messages: [{ role: "user", content: prompt }],
           sessionId: sid,
           propertyId: cfg.id,
         }),
       });
       if (res.ok) {
-        const data = (await res.json()) as { reply?: string };
-        setMessages([{ id: generateId(), role: "assistant", text: data.reply ?? "Welcome! How can I help you today?" }]);
+        const data = (await res.json()) as { reply?: string; extracted?: Extraction[]; sessionStatus?: string };
+        setMessages([{ id: generateId(), role: "assistant", text: data.reply ?? "Welcome! How can I help you today?", extracted: data.extracted }]);
       } else {
         setMessages([{ id: generateId(), role: "assistant", text: `Welcome! I'm here to help with your application for ${cfg.title}.` }]);
       }
@@ -137,7 +146,7 @@ export default function ChatPage() {
       const propRes = await supabase
         .from("properties")
         .select("*")
-        .eq("id", propertyId)
+        .eq("slug", slug)
         .single();
 
       if (propRes.error || !propRes.data) {
@@ -163,14 +172,22 @@ export default function ChatPage() {
       };
       setConfig(cfg);
 
-      const cn = cookieName(propertyId);
+      const cn = cookieName(p.id);
       const existing = getCookie(cn);
       const sid = existing && existing.length > 10 ? existing : crypto.randomUUID();
       if (!existing) setCookie(cn, sid);
       setSessionId(sid);
 
+      let initialAnswers: Record<string, string> = {};
+      if (tenantName) {
+        const nameField = cfg.fields.find(f => f.id.toLowerCase().includes("name") || f.label.toLowerCase().includes("name"));
+        if (nameField) {
+          initialAnswers[nameField.id] = tenantName;
+        }
+      }
+
       try {
-        const res = await fetch(`/api/session?propertyId=${encodeURIComponent(propertyId)}`);
+        const res = await fetch(`/api/session?propertyId=${encodeURIComponent(p.id)}`);
         if (res.ok) {
           const data = (await res.json()) as {
             answers?: Record<string, string>;
@@ -178,7 +195,9 @@ export default function ChatPage() {
             status?: string;
           };
 
-          setAnswers(data.answers ?? {});
+          const mergedAnswers = { ...initialAnswers, ...(data.answers ?? {}) };
+          setAnswers(mergedAnswers);
+          
           setMessages((data.messages ?? [])
             .filter((m) => !(m.role === "user" && m.content.startsWith("(new conversation")))
             .map((m) => ({
@@ -192,16 +211,21 @@ export default function ChatPage() {
             setQualified(true);
             setCompleted(true);
           }
+          if (!data.messages?.length) {
+            await fetchGreeting(cfg, sid, mergedAnswers);
+          }
         } else {
-          await fetchGreeting(cfg, sid);
+          setAnswers(initialAnswers);
+          await fetchGreeting(cfg, sid, initialAnswers);
         }
       } catch {
-        await fetchGreeting(cfg, sid);
+        setAnswers(initialAnswers);
+        await fetchGreeting(cfg, sid, initialAnswers);
       }
       setPageReady(true);
     }
     void load();
-  }, [propertyId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [slug]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -320,19 +344,27 @@ export default function ChatPage() {
       } catch { /* best-effort */ }
     }
 
-    const cn = cookieName(propertyId);
+    const cn = cookieName(config.id);
     const newSid = crypto.randomUUID();
     setCookie(cn, newSid);
     setSessionId(newSid);
 
+    let initialAnswers: Record<string, string> = {};
+    if (tenantName) {
+      const nameField = config.fields.find(f => f.id.toLowerCase().includes("name") || f.label.toLowerCase().includes("name"));
+      if (nameField) {
+        initialAnswers[nameField.id] = tenantName;
+      }
+    }
+
     setMessages([]);
-    setAnswers({});
+    setAnswers(initialAnswers);
     setRejected(false);
     setCompleted(false);
     setQualified(false);
     setInput("");
 
-    await fetchGreeting(config, newSid);
+    await fetchGreeting(config, newSid, initialAnswers);
   }
 
   const answeredCount = Object.keys(answers).length;

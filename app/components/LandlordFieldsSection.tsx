@@ -9,6 +9,7 @@ import {
   validateLandlordFieldLabel,
   validateEnumOptions,
 } from "@/lib/landlord-field";
+import type { LandlordRule } from "@/lib/landlord-rule";
 import { generateId } from "./RuleBuilder";
 
 const KIND_LABELS: Record<FieldValueKind, string> = {
@@ -49,6 +50,7 @@ function FieldRow({
   onMoveUp,
   onMoveDown,
   action,
+  allFields,
 }: {
   field: FieldWithKey;
   index: number;
@@ -58,10 +60,15 @@ function FieldRow({
   onMoveUp: () => void;
   onMoveDown: () => void;
   action?: React.ReactNode;
+  allFields?: LandlordField[];
 }) {
   const uid = useId();
   const idError = field.id ? validateLandlordFieldId(field.id) : null;
   const labelError = field.label ? validateLandlordFieldLabel(field.label) : null;
+  const duplicateLabelError = (field.label.trim() && (allFields?.filter(f => f.label.trim().toLowerCase() === field.label.trim().toLowerCase()).length ?? 0) > 1) 
+    ? "Field name must be unique" : null;
+  const duplicateIdError = (field.id.trim() && (allFields?.filter(f => f.id.trim() === field.id.trim()).length ?? 0) > 1)
+    ? "Field ID must be unique" : null;
   const enumOptionsError =
     field.value_kind === "enum"
       ? validateEnumOptions(field.options)
@@ -128,6 +135,9 @@ function FieldRow({
           {labelError && (
             <p className="mt-1 text-xs text-red-500">{labelError}</p>
           )}
+          {duplicateLabelError && (
+            <p className="mt-1 text-xs text-red-500">{duplicateLabelError}</p>
+          )}
         </div>
 
         {/* Compact meta row: ID · Type · Action */}
@@ -176,6 +186,9 @@ function FieldRow({
 
         {idError && (
           <p className="text-xs text-red-500">{idError}</p>
+        )}
+        {duplicateIdError && (
+          <p className="text-xs text-red-500">{duplicateIdError}</p>
         )}
 
         {field.value_kind === "enum" ? (
@@ -256,12 +269,18 @@ export default function LandlordFieldsSection({
   onChange,
   fieldAction,
   onBeforeDelete,
+  allFields,
+  rules: _rules,
+  onRulesChange: _onRulesChange,
 }: {
   fields: LandlordField[];
   onChange: (fields: LandlordField[]) => void;
   fieldAction?: (field: LandlordField) => React.ReactNode;
   /** Return false to cancel delete (e.g. parent will update `fields` after async confirm). */
   onBeforeDelete?: (field: LandlordField, index: number) => boolean;
+  allFields?: LandlordField[];
+  rules?: LandlordRule[];
+  onRulesChange?: (rules: LandlordRule[]) => void;
 }) {
   function fingerprint(f: LandlordField[]) {
     return f.map((x) => x.id).join("\0") + "\0" + f.length;
@@ -332,6 +351,7 @@ export default function LandlordFieldsSection({
               onMoveUp={() => handleMoveUp(i)}
               onMoveDown={() => handleMoveDown(i)}
               action={fieldAction && field.id ? fieldAction(field) : undefined}
+              allFields={allFields}
             />
           ))}
         </div>

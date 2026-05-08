@@ -40,12 +40,7 @@ export default async function DashboardLayout({
               </svg>
               All Applicants
             </Link>
-            <Link
-              href="/shared-fields"
-              className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-sm text-[#1a2e2a]/70 transition-colors hover:bg-[#f7f9f8]"
-            >
-              Shared Questions
-            </Link>
+
             <form action={signOut}>
               <button
                 type="submit"

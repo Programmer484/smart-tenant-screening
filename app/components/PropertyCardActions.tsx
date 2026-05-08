@@ -4,13 +4,16 @@ import { useState, useRef, useEffect, useTransition } from "react";
 import { toast } from "sonner";
 import { deleteProperty } from "@/app/actions";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { ShareLinkModal } from "./ShareLinkModal";
 
 export function PropertyCardActions({
   propertyId,
   propertyTitle,
+  slug,
 }: {
   propertyId: string;
   propertyTitle: string;
+  slug: string;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -27,11 +30,11 @@ export function PropertyCardActions({
     return () => document.removeEventListener("mousedown", handleClick);
   }, [menuOpen]);
 
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+
   async function handleCopyLink() {
     setMenuOpen(false);
-    const url = `${window.location.origin}/chat/${propertyId}`;
-    await navigator.clipboard.writeText(url);
-    toast.success("Link copied to clipboard");
+    setShareModalOpen(true);
   }
 
   function handleDelete() {
@@ -92,6 +95,11 @@ export function PropertyCardActions({
         destructive
         onConfirm={handleDelete}
         onCancel={() => setDeleteDialogOpen(false)}
+      />
+      <ShareLinkModal 
+        open={shareModalOpen} 
+        slug={slug} 
+        onClose={() => setShareModalOpen(false)} 
       />
     </>
   );

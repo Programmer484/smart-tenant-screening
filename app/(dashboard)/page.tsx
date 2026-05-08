@@ -2,7 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import type { PropertyRecord } from "@/lib/property";
-import { createNewProperty } from "@/app/actions";
+import { NewPropertyButton } from "@/app/components/NewPropertyButton";
 import { PropertyCardActions } from "@/app/components/PropertyCardActions";
 
 export default async function PropertiesPage() {
@@ -26,17 +26,7 @@ export default async function PropertiesPage() {
           <h1 className="text-2xl font-bold text-[#1a2e2a]">Properties</h1>
           <p className="mt-1 text-sm text-[#1a2e2a]/50">Manage your screening chatbots</p>
         </div>
-        <form action={createNewProperty}>
-          <button
-            type="submit"
-            className="flex items-center gap-1.5 rounded-lg bg-teal-800 px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90"
-          >
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden>
-              <path d="M6 1v10M1 6h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-            </svg>
-            New Property
-          </button>
-        </form>
+        <NewPropertyButton />
       </div>
 
       {list.length === 0 ? (
@@ -88,7 +78,7 @@ export default async function PropertiesPage() {
                 </Link>
                 <div className="flex items-center gap-2 border-t border-black/5 px-6 py-3">
                   <Link
-                    href={`/chat/${p.id}`}
+                    href={`/chat/${p.slug || p.id}`}
                     target="_blank"
                     className="rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/60 transition-colors hover:bg-[#f7f9f8] hover:text-[#1a2e2a]"
                   >
@@ -100,7 +90,7 @@ export default async function PropertiesPage() {
                   >
                     Applicants
                   </Link>
-                  <PropertyCardActions propertyId={p.id} propertyTitle={p.title} />
+                  <PropertyCardActions propertyId={p.id} propertyTitle={p.title} slug={p.slug || p.id} />
                 </div>
               </div>
             );
