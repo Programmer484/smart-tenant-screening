@@ -101,6 +101,10 @@ function FieldRow({
   const uid = useId();
   const idError = field.id ? validateLandlordFieldId(field.id) : null;
   const labelError = field.label ? validateLandlordFieldLabel(field.label) : null;
+  const duplicateLabelError = (field.label.trim() && (allFields?.filter(f => f.label.trim().toLowerCase() === field.label.trim().toLowerCase()).length ?? 0) > 1) 
+    ? "Field name must be unique" : null;
+  const duplicateIdError = (field.id.trim() && (allFields?.filter(f => f.id.trim() === field.id.trim()).length ?? 0) > 1)
+    ? "Field ID must be unique" : null;
   const enumOptionsError =
     field.value_kind === "enum"
       ? validateEnumOptions(field.options)
@@ -170,6 +174,9 @@ function FieldRow({
           {labelError && (
             <p className="mt-1 text-xs text-red-500">{labelError}</p>
           )}
+          {duplicateLabelError && (
+            <p className="mt-1 text-xs text-red-500">{duplicateLabelError}</p>
+          )}
         </div>
 
         {/* Compact meta row: ID · Type · Action */}
@@ -218,6 +225,9 @@ function FieldRow({
 
         {idError && (
           <p className="text-xs text-red-500">{idError}</p>
+        )}
+        {duplicateIdError && (
+          <p className="text-xs text-red-500">{duplicateIdError}</p>
         )}
 
         {field.value_kind === "enum" ? (

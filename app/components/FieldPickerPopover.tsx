@@ -215,7 +215,7 @@ export function FieldPickerPopover({
       <div className="flex items-center justify-between border-t border-black/5 px-3 py-2 text-[11px] text-foreground/45">
         <span>{selectedIds.length} selected</span>
         <div className="flex items-center gap-1">
-          {onCreateField && (
+          {onCreateField && query.trim() && !fields.some(f => f.label.toLowerCase() === query.trim().toLowerCase()) && (
             <button
               type="button"
               onClick={() => onCreateField(query)}
