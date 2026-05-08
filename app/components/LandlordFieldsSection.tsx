@@ -9,13 +9,7 @@ import {
   validateLandlordFieldLabel,
   validateEnumOptions,
 } from "@/lib/landlord-field";
-import {
-  RULE_KIND_FIELD_VISIBILITY,
-  isFieldVisibilityRule,
-  operatorLabel,
-  type LandlordRule,
-} from "@/lib/landlord-rule";
-import { RuleBuilder, generateId, emptyCondition } from "./RuleBuilder";
+import { generateId } from "./RuleBuilder";
 
 const KIND_LABELS: Record<FieldValueKind, string> = {
   text: "Text",
@@ -46,29 +40,6 @@ function emptyField(): LandlordField & { _key: string; _isNew?: boolean } {
 
 type FieldWithKey = LandlordField & { _key: string; _isNew?: boolean };
 
-function conditionSummary(
-  rules: LandlordRule[],
-  allFields: LandlordField[],
-): string {
-  return rules
-    .map((r, ri) => {
-      const parts = r.conditions.map((c) => {
-        const cf = allFields.find((f) => f.id === c.fieldId);
-        const label = cf?.label || c.fieldId;
-        const op = operatorLabel(c.operator, cf?.value_kind);
-        const val =
-          cf?.value_kind === "boolean"
-            ? c.value === "true"
-              ? "yes"
-              : "no"
-            : c.value || "…";
-        return `${label} ${op} ${val}`;
-      });
-      return ri > 0 ? `or ${parts.join(" & ")}` : parts.join(" & ");
-    })
-    .join(" ");
-}
-
 function FieldRow({
   field,
   index,
@@ -78,11 +49,6 @@ function FieldRow({
   onMoveUp,
   onMoveDown,
   action,
-  allFields,
-  fieldRules,
-  onRuleAdd,
-  onRuleChange,
-  onRuleDelete,
 }: {
   field: FieldWithKey;
   index: number;
@@ -92,11 +58,6 @@ function FieldRow({
   onMoveUp: () => void;
   onMoveDown: () => void;
   action?: React.ReactNode;
-  allFields?: LandlordField[];
-  fieldRules?: LandlordRule[];
-  onRuleAdd?: () => void;
-  onRuleChange?: (idx: number, updated: LandlordRule) => void;
-  onRuleDelete?: (idx: number) => void;
 }) {
   const uid = useId();
   const idError = field.id ? validateLandlordFieldId(field.id) : null;
@@ -107,7 +68,6 @@ function FieldRow({
       : null;
 
   const isLocked = !field._isNew;
-
   function handleLabelChange(newLabel: string) {
     const prevAutoId = labelToFieldId(field.label);
     const updated: FieldWithKey = { ...field, label: newLabel };
@@ -116,8 +76,6 @@ function FieldRow({
     }
     onChange(updated);
   }
-
-  const hasRules = fieldRules && fieldRules.length > 0;
 
   return (
     <div className="flex gap-3 rounded-xl border border-foreground/10 bg-background p-3 shadow-sm">
@@ -276,59 +234,6 @@ function FieldRow({
           </div>
         ) : null}
 
-        {/* Field visibility conditions */}
-        {allFields && fieldRules !== undefined && (
-          <details className="mt-1 group" open={hasRules || undefined}>
-            <summary className="cursor-pointer select-none text-[11px] text-foreground/40 hover:text-foreground/55 transition-colors flex items-center gap-1.5 leading-relaxed">
-              <svg width="8" height="8" viewBox="0 0 10 10" fill="none" className="shrink-0 transition-transform group-open:rotate-90">
-                <path d="M3 1.5l4 3.5-4 3.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              {!hasRules ? (
-                <span>Conditional…</span>
-              ) : (
-                <span className="text-foreground/50 truncate">
-                  Show if {conditionSummary(fieldRules!, allFields)}
-                </span>
-              )}
-            </summary>
-
-            <div className="mt-1.5 flex flex-col gap-2 rounded-lg bg-foreground/[0.015] border border-foreground/5 p-2.5">
-              {!hasRules && (
-                <p className="text-[11px] text-foreground/30 leading-relaxed">
-                  Only ask this during the interview when other fields match a condition.
-                </p>
-              )}
-
-              {fieldRules!.map((rule, idx) => (
-                <div key={rule.id}>
-                  {idx > 0 && (
-                    <div className="flex items-center gap-2 my-1.5">
-                      <div className="h-px flex-1 bg-foreground/6" />
-                      <span className="text-[9px] font-bold uppercase tracking-widest text-foreground/25">or</span>
-                      <div className="h-px flex-1 bg-foreground/6" />
-                    </div>
-                  )}
-                  <RuleBuilder
-                    rule={rule}
-                    fields={allFields}
-                    labelOverride={idx === 0 ? "Show this field when:" : undefined}
-                    onChange={(updated) => onRuleChange?.(idx, updated)}
-                    onDelete={() => onRuleDelete?.(idx)}
-                  />
-                </div>
-              ))}
-
-              <button
-                type="button"
-                onClick={onRuleAdd}
-                className="self-start text-[11px] text-foreground/35 transition-colors hover:text-teal-700 flex items-center gap-1"
-              >
-                <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
-                {!hasRules ? "Add condition" : "Add alternative (OR)"}
-              </button>
-            </div>
-          </details>
-        )}
       </div>
 
       {/* Delete */}
@@ -351,18 +256,12 @@ export default function LandlordFieldsSection({
   onChange,
   fieldAction,
   onBeforeDelete,
-  allFields,
-  rules,
-  onRulesChange,
 }: {
   fields: LandlordField[];
   onChange: (fields: LandlordField[]) => void;
   fieldAction?: (field: LandlordField) => React.ReactNode;
   /** Return false to cancel delete (e.g. parent will update `fields` after async confirm). */
   onBeforeDelete?: (field: LandlordField, index: number) => boolean;
-  allFields?: LandlordField[];
-  rules?: LandlordRule[];
-  onRulesChange?: (rules: LandlordRule[]) => void;
 }) {
   function fingerprint(f: LandlordField[]) {
     return f.map((x) => x.id).join("\0") + "\0" + f.length;
@@ -422,9 +321,7 @@ export default function LandlordFieldsSection({
     <section className="flex flex-col gap-3">
       {rows.length > 0 && (
         <div className="flex flex-col gap-3">
-          {rows.map((field, i) => {
-            const fieldRules = rules?.filter(r => isFieldVisibilityRule(r) && r.targetFieldId === field.id) || [];
-            return (
+          {rows.map((field, i) => (
             <FieldRow
               key={field._key}
               field={field}
@@ -435,32 +332,8 @@ export default function LandlordFieldsSection({
               onMoveUp={() => handleMoveUp(i)}
               onMoveDown={() => handleMoveDown(i)}
               action={fieldAction && field.id ? fieldAction(field) : undefined}
-              allFields={allFields}
-              fieldRules={fieldRules}
-              onRuleAdd={() => {
-                if (!onRulesChange || !rules) return;
-                const newRule: LandlordRule = {
-                  id: generateId(),
-                  kind: RULE_KIND_FIELD_VISIBILITY,
-                  targetFieldId: field.id,
-                  conditions: [emptyCondition(allFields ?? fields)]
-                };
-                onRulesChange([...rules, newRule]);
-              }}
-              onRuleChange={(idx, updated) => {
-                if (!onRulesChange || !rules) return;
-                const targetId = fieldRules[idx].id;
-                const nextRules = rules.map(r => r.id === targetId ? updated : r);
-                onRulesChange(nextRules);
-              }}
-              onRuleDelete={(idx) => {
-                if (!onRulesChange || !rules) return;
-                const targetId = fieldRules[idx].id;
-                const nextRules = rules.filter(r => r.id !== targetId);
-                onRulesChange(nextRules);
-              }}
             />
-          )})}
+          ))}
         </div>
       )}
 

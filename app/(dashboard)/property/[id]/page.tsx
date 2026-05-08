@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
-import type { PropertyRecord, PropertyLinks, AiInstructions } from "@/lib/property";
+import type { PropertyRecord, PropertyLinks, AiInstructions, PropertyVariable } from "@/lib/property";
 import { DEFAULT_AI_INSTRUCTIONS, DEFAULT_LINKS, resolveAiInstructions } from "@/lib/property";
 import type { LandlordField } from "@/lib/landlord-field";
 import {
@@ -20,8 +20,9 @@ import { PropertyEditorSkeleton } from "@/app/components/Skeleton";
 import { ConfirmDialog } from "@/app/components/ConfirmDialog";
 import { RuleProposalModal, type Proposal } from "@/app/components/RuleProposalModal";
 import LandlordFieldsSection from "@/app/components/LandlordFieldsSection";
+import VariablesSection from "@/app/components/VariablesSection";
 
-const TABS = ["Fields", "Questions", "Rules", "Links", "AI Behavior"] as const;
+const TABS = ["Fields", "Questions", "Variables", "Rules", "Links", "AI Behavior"] as const;
 type Tab = (typeof TABS)[number];
 
 function generateId() {
@@ -57,6 +58,7 @@ export default function PropertySetupPage() {
   const [description, setDescription] = useState("");
   const [fields, setFields] = useState<LandlordField[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [variables, setVariables] = useState<PropertyVariable[]>([]);
   const [rules, setRules] = useState<LandlordRule[]>([]);
   const [links, setLinks] = useState<PropertyLinks>(DEFAULT_LINKS);
   const [aiInstructions, setAiInstructions] = useState<AiInstructions>(DEFAULT_AI_INSTRUCTIONS);
@@ -110,6 +112,7 @@ export default function PropertySetupPage() {
       setQuestions(((p.questions as Question[]) ?? []).map((q) => ({ ...q, branches: q.branches ?? [] })));
       const migratedRules = migrateRules((p.rules as any[]) ?? []);
       setRules(migratedRules);
+      setVariables((p.variables as PropertyVariable[]) ?? []);
       setLinks({ ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) });
       setAiInstructions(resolveAiInstructions(p.ai_instructions));
 
@@ -117,7 +120,9 @@ export default function PropertySetupPage() {
         title: p.title, description: p.description,
         fields: (p.fields as LandlordField[]) ?? [],
         questions: ((p.questions as Question[]) ?? []).map((q) => ({ ...q, branches: q.branches ?? [] })),
-        rules: migratedRules, links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) },
+        rules: migratedRules,
+        variables: (p.variables as PropertyVariable[]) ?? [],
+        links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) },
         aiInstructions: resolveAiInstructions(p.ai_instructions),
       });
       hasLoadedRef.current = true;
@@ -129,9 +134,9 @@ export default function PropertySetupPage() {
   // ── Dirty tracking ──
   useEffect(() => {
     if (pageLoading) return;
-    const current = JSON.stringify({ title, description, fields, questions, rules, links, aiInstructions });
+    const current = JSON.stringify({ title, description, fields, questions, variables, rules, links, aiInstructions });
     setDirty(current !== lastSavedRef.current);
-  }, [title, description, fields, questions, rules, links, aiInstructions, pageLoading, lastSavedRef]);
+  }, [title, description, fields, questions, variables, rules, links, aiInstructions, pageLoading, lastSavedRef]);
 
   useEffect(() => {
     function onBeforeUnload(e: BeforeUnloadEvent) {
@@ -527,7 +532,7 @@ export default function PropertySetupPage() {
     <>
       {/* ── Sticky sub-header ─────────────────────────────────────────── */}
       <div className="sticky top-0 z-10 border-b border-black/8 bg-white/95 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-3xl items-center justify-between px-6 py-3">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-3">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
             <Link href="/" className="shrink-0 text-[#1a2e2a]/45 transition-colors hover:text-[#1a2e2a]">
               Properties
@@ -578,7 +583,7 @@ export default function PropertySetupPage() {
       </div>
 
       {/* ── Content ───────────────────────────────────────────────────── */}
-      <div className="mx-auto max-w-3xl space-y-6 px-6 py-8">
+      <div className="mx-auto max-w-5xl space-y-6 px-6 py-8">
 
         {/* Onboarding guide */}
         {isNew && (
@@ -628,24 +633,32 @@ export default function PropertySetupPage() {
         <section className="rounded-xl border border-black/8 bg-white shadow-sm">
           {/* Tab bar */}
           <div className="flex gap-1 border-b border-black/5 px-6 pt-1">
-            {TABS.map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => {
-                  if (activeTab === "Fields" && tab !== "Fields") {
-                    setFields(prev => prev.filter(f => f.id.trim() !== "" || f.label.trim() !== ""));
-                  }
-                  setActiveTab(tab);
-                }}
-                className={`px-3 py-3 text-sm font-medium transition-colors ${activeTab === tab
-                  ? "border-b-2 border-teal-700 text-teal-700"
-                  : "text-foreground/45 hover:text-foreground/70"
+            {TABS.map((tab) => {
+              const count = tab === "Fields" ? fields.length : tab === "Questions" ? questions.length : tab === "Rules" ? rules.length : 0;
+              return (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => {
+                    if (activeTab === "Fields" && tab !== "Fields") {
+                      setFields(prev => prev.filter(f => f.id.trim() !== "" || f.label.trim() !== ""));
+                    }
+                    setActiveTab(tab);
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-3 text-sm font-medium transition-colors ${activeTab === tab
+                    ? "border-b-2 border-teal-700 text-teal-700"
+                    : "text-foreground/45 hover:text-foreground/70"
                   }`}
-              >
-                {tab}
-              </button>
-            ))}
+                >
+                  {tab}
+                  {count > 0 && (
+                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none ${activeTab === tab ? "bg-teal-100 text-teal-700" : "bg-foreground/8 text-foreground/40"}`}>
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
           <div className="p-6">
@@ -665,9 +678,6 @@ export default function PropertySetupPage() {
                 <LandlordFieldsSection
                   fields={fields}
                   onChange={setFields}
-                  allFields={fields}
-                  rules={rules}
-                  onRulesChange={setRules}
                   onBeforeDelete={(field, index) => {
                     requestDeleteField(index);
                     return false;
