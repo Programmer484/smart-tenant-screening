@@ -761,24 +761,31 @@ export default function PropertySetupPage() {
         <section className="rounded-xl border border-black/8 bg-white shadow-sm">
           {/* Tab bar */}
           <div className="flex gap-1 border-b border-black/5 px-6 pt-1">
-            {TABS.map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => {
-                  if (activeTab === "Fields" && tab !== "Fields") {
-                    setFields(prev => prev.filter(f => f.id.trim() !== "" || f.label.trim() !== ""));
-                  }
-                  setActiveTab(tab);
-                }}
-                className={`px-3 py-3 text-sm font-medium transition-colors ${activeTab === tab
-                  ? "border-b-2 border-teal-700 text-teal-700"
-                  : "text-foreground/60 hover:text-foreground/70"
-                  }`}
+            {TABS.map((tab) => {
+              const count =
+                tab === "Fields" ? fields.length :
+                tab === "Questions" ? questions.length :
+                tab === "Rules" ? rules.length :
+                tab === "Variables" ? variables.length :
+                0;
+              return (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => {
+                    if (activeTab === "Fields" && tab !== "Fields") {
+                      setFields(prev => prev.filter(f => f.id.trim() !== "" || f.label.trim() !== ""));
+                    }
+                    setActiveTab(tab);
+                  }}
+                  className={`px-3 py-3 text-sm font-medium transition-colors ${activeTab === tab
+                    ? "border-b-2 border-teal-700 text-teal-700"
+                    : "text-foreground/60 hover:text-foreground/70"
+                    }`}
                 >
                   {tab}
                   {count > 0 && (
-                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none ${activeTab === tab ? "bg-teal-100 text-teal-700" : "bg-foreground/8 text-foreground/40"}`}>
+                    <span className={`ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none ${activeTab === tab ? "bg-teal-100 text-teal-700" : "bg-foreground/8 text-foreground/40"}`}>
                       {count}
                     </span>
                   )}
@@ -848,6 +855,7 @@ export default function PropertySetupPage() {
                 <FlowEditor
                   questions={questions}
                   fields={fields}
+                  customVariables={variables}
                   onChange={setQuestions}
                   onGenerateTargeted={handleGenerateTargeted}
                   onCreateField={(label) => {
@@ -953,6 +961,20 @@ export default function PropertySetupPage() {
                     </button>
                   )}
                 </div>
+              </div>
+            )}
+
+            {/* ── Variables Tab ── */}
+            {activeTab === "Variables" && (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-sm font-medium text-foreground/80">Template variables</h3>
+                  <p className="text-xs text-foreground/60">
+                    Define custom variables to insert into question text using{" "}
+                    <code className="font-mono text-[11px]">{"{{key}}"}</code> syntax.
+                  </p>
+                </div>
+                <VariablesSection variables={variables} onChange={setVariables} />
               </div>
             )}
 

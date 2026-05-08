@@ -1,4 +1,4 @@
-import type { LandlordField } from "./landlord-field";
+import type { LandlordField, FieldValueKind } from "./landlord-field";
 import type { LandlordRule } from "./landlord-rule";
 import type { Question } from "./question";
 
@@ -47,6 +47,7 @@ export type PropertyVariable = {
   key: string;
   label: string;
   value: string;
+  value_kind?: FieldValueKind;
 };
 
 /** Raw shape as stored in the `properties` table */

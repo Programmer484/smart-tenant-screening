@@ -5,6 +5,8 @@ import { FieldPickerPopover } from "@/app/components/FieldPickerPopover";
 import type { Question, Branch, BranchOutcome } from "@/lib/question";
 import type { LandlordField } from "@/lib/landlord-field";
 import { OPERATORS_BY_KIND, defaultOperatorForKind, defaultValueForKind } from "@/lib/landlord-rule";
+import type { PropertyVariable } from "@/lib/property";
+import { VariablePickerPopover } from "@/app/components/VariablePickerPopover";
 
 // ─── Navigation types ────────────────────────────────────────────────────────
 
@@ -179,28 +181,69 @@ function ConditionEditor({
   customVars: PropertyVariable[];
   onChange: (c: { fieldId: string; operator: string; value: string }) => void;
 }) {
+  // Unified source: fields + variables (variables use their key as id)
+  const varAsField = customVars.map((v) => ({
+    id: v.key,
+    label: v.label || v.key,
+    value_kind: v.value_kind ?? "text" as const,
+    options: undefined as string[] | undefined,
+  }));
+  const allSources = [...fields, ...varAsField];
+  const source = allSources.find((s) => s.id === condition.fieldId);
+  // Keep backward-compat alias
   const field = fields.find((f) => f.id === condition.fieldId);
-  const ops = field ? (OPERATORS_BY_KIND[field.value_kind] ?? []) : [];
+  const ops = source ? (OPERATORS_BY_KIND[source.value_kind] ?? []) : [];
+  const valueInputRef = useRef<HTMLInputElement>(null);
+  const valueCursorRef = useRef<number>(0);
+  const varBtnRef = useRef<HTMLButtonElement>(null);
+  const [varPickerOpen, setVarPickerOpen] = useState(false);
+  const [varPickerAnchor, setVarPickerAnchor] = useState<DOMRect | null>(null);
+
+  const isDropdownValue =
+    source?.value_kind === "boolean" ||
+    (source?.value_kind === "enum" && (field?.options?.length ?? 0) > 0);
+
+  function insertVar(token: string) {
+    const pos = valueCursorRef.current;
+    const newVal = condition.value.slice(0, pos) + token + condition.value.slice(pos);
+    const newPos = pos + token.length;
+    valueCursorRef.current = newPos;
+    onChange({ ...condition, value: newVal });
+    requestAnimationFrame(() => {
+      valueInputRef.current?.focus();
+      valueInputRef.current?.setSelectionRange(newPos, newPos);
+    });
+  }
 
   const selectCls = "rounded-md border border-foreground/15 bg-white px-2.5 py-1.5 text-sm font-medium text-foreground shadow-sm focus:border-teal-700/40 focus:outline-none focus:ring-2 focus:ring-teal-700/10";
-  const inputCls = "w-32 rounded-md border border-foreground/15 bg-white px-2.5 py-1.5 text-sm font-medium text-foreground shadow-sm focus:border-teal-700/40 focus:outline-none focus:ring-2 focus:ring-teal-700/10";
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <span className="text-sm font-medium text-foreground/60">When</span>
+      <span className="text-[10px] font-medium text-foreground/40">when</span>
       <select
         value={condition.fieldId}
         onChange={(e) => {
-          const f = fields.find((f) => f.id === e.target.value);
-          if (!f) return;
-          onChange({ fieldId: f.id, operator: defaultOperatorForKind(f.value_kind), value: defaultValueForKind(f.value_kind) });
+          const s = allSources.find((s) => s.id === e.target.value);
+          if (!s) return;
+          onChange({ fieldId: s.id, operator: defaultOperatorForKind(s.value_kind), value: defaultValueForKind(s.value_kind) });
         }}
         className={selectCls}
       >
-        {fields.length === 0 && <option value="">— no fields —</option>}
-        {fields.map((f) => (
-          <option key={f.id} value={f.id}>{f.label || f.id}</option>
-        ))}
+        {allSources.length === 0 && <option value="">— no fields or variables —</option>}
+        {fields.length > 0 && (
+          <optgroup label="Fields">
+            {fields.map((f) => (
+              <option key={f.id} value={f.id}>{f.label || f.id}</option>
+            ))}
+          </optgroup>
+        )}
+        {varAsField.length > 0 && (
+          <optgroup label="Variables">
+            {varAsField.map((v) => (
+              <option key={v.id} value={v.id}>{v.label}</option>
+            ))}
+          </optgroup>
+        )}
       </select>
       <select
         value={condition.operator}
@@ -209,14 +252,60 @@ function ConditionEditor({
       >
         {ops.map((op) => <option key={op} value={op}>{op}</option>)}
       </select>
-      <input
-        type="text"
-        value={condition.value}
-        onChange={(e) => onChange({ ...condition, value: e.target.value })}
-        placeholder="value"
-        className={inputCls}
-      />
-      <span className="text-sm font-medium text-foreground/60">,</span>
+      {field?.value_kind === "boolean" ? (
+        <select
+          value={condition.value}
+          onChange={(e) => onChange({ ...condition, value: e.target.value })}
+          className={selectCls}
+        >
+          <option value="true">Yes</option>
+          <option value="false">No</option>
+        </select>
+      ) : field?.value_kind === "enum" && field.options?.length ? (
+        <select
+          value={condition.value}
+          onChange={(e) => onChange({ ...condition, value: e.target.value })}
+          className={selectCls}
+        >
+          {field.options.map((opt) => (
+            <option key={opt} value={opt}>{opt}</option>
+          ))}
+        </select>
+      ) : (
+        <input
+          ref={valueInputRef}
+          type={source?.value_kind === "number" ? "number" : "text"}
+          value={condition.value}
+          onChange={(e) => onChange({ ...condition, value: e.target.value })}
+          onSelect={() => { valueCursorRef.current = valueInputRef.current?.selectionStart ?? 0; }}
+          onBlur={() => { valueCursorRef.current = valueInputRef.current?.selectionStart ?? valueCursorRef.current; }}
+          placeholder="value"
+          className="w-24 rounded border border-foreground/10 bg-white px-2 py-1 font-mono text-[11px] text-foreground focus:border-teal-700/40 focus:outline-none"
+        />
+      )}
+      {!isDropdownValue && (
+        <>
+          <button
+            ref={varBtnRef}
+            type="button"
+            disabled={customVars.length === 0}
+            onClick={() => {
+              setVarPickerAnchor(varBtnRef.current?.getBoundingClientRect() ?? null);
+              setVarPickerOpen(true);
+            }}
+            className="rounded-lg border border-indigo-200/80 bg-indigo-50 px-2 py-1 text-[11px] font-medium text-indigo-700 transition-colors hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-35"
+          >
+            {"{ } var"}
+          </button>
+          <VariablePickerPopover
+            open={varPickerOpen}
+            anchorRect={varPickerAnchor}
+            variables={customVars}
+            onInsert={insertVar}
+            onClose={() => setVarPickerOpen(false)}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -244,6 +333,10 @@ export default function FlowEditor({
   const [fieldPickerAnchor, setFieldPickerAnchor] = useState<DOMRect | null>(null);
   const fieldPickerBtnRef = useRef<HTMLButtonElement>(null);
   const questionInputRef = useRef<HTMLInputElement>(null);
+  const questionCursorRef = useRef<number>(0);
+  const varPickerBtnRef = useRef<HTMLButtonElement>(null);
+  const [varPickerOpen, setVarPickerOpen] = useState(false);
+  const [varPickerAnchor, setVarPickerAnchor] = useState<DOMRect | null>(null);
   const [aiEditPrompt, setAiEditPrompt] = useState("");
   const [isGeneratingTargeted, setIsGeneratingTargeted] = useState(false);
 
@@ -284,16 +377,16 @@ export default function FlowEditor({
   }
 
   function insertVarIntoQuestion(token: string) {
-    const input = questionInputRef.current;
-    if (!input || !focusedQuestion) return;
-    const pos = input.selectionStart ?? focusedQuestion.text.length;
+    if (!focusedQuestion) return;
+    const pos = questionCursorRef.current;
     const text = focusedQuestion.text;
     const newText = text.slice(0, pos) + token + text.slice(pos);
     const newPos = pos + token.length;
+    questionCursorRef.current = newPos;
     mutate((q) => ({ ...q, text: newText }));
     requestAnimationFrame(() => {
-      input.focus();
-      input.setSelectionRange(newPos, newPos);
+      questionInputRef.current?.focus();
+      questionInputRef.current?.setSelectionRange(newPos, newPos);
     });
   }
 
@@ -507,13 +600,44 @@ export default function FlowEditor({
             <div className="rounded-lg border border-black/8 p-4">
 
               {/* Question text */}
-              <input
-                type="text"
-                value={focusedQuestion.text}
-                onChange={(e) => mutate((q) => ({ ...q, text: e.target.value }))}
-                placeholder="Question text…"
-                className="mb-4 w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2.5 text-sm text-foreground placeholder:text-foreground/70 focus:border-teal-700/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
-              />
+              <div className="mb-4">
+                <input
+                  ref={questionInputRef}
+                  type="text"
+                  value={focusedQuestion.text}
+                  onChange={(e) => mutate((q) => ({ ...q, text: e.target.value }))}
+                  onSelect={() => { questionCursorRef.current = questionInputRef.current?.selectionStart ?? 0; }}
+                  onBlur={() => { questionCursorRef.current = questionInputRef.current?.selectionStart ?? questionCursorRef.current; }}
+                  placeholder="Question text…"
+                  className="w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2.5 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
+                />
+              </div>
+
+
+              {/* Variables */}
+              <div className="mb-4 flex items-center gap-3">
+                <span className="text-sm font-medium text-foreground/60">Variables</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    ref={varPickerBtnRef}
+                    type="button"
+                    onClick={() => {
+                      setVarPickerAnchor(varPickerBtnRef.current?.getBoundingClientRect() ?? null);
+                      setVarPickerOpen(true);
+                    }}
+                    className="rounded-md border border-violet-200/80 bg-violet-50/50 px-3 py-1 text-xs font-medium text-violet-800 shadow-sm transition-colors hover:bg-violet-50"
+                  >
+                    Insert variable…
+                  </button>
+                </div>
+                <VariablePickerPopover
+                  open={varPickerOpen}
+                  anchorRect={varPickerAnchor}
+                  variables={customVariables}
+                  onInsert={insertVarIntoQuestion}
+                  onClose={() => setVarPickerOpen(false)}
+                />
+              </div>
 
               {/* Linked fields */}
               <div className="mb-6 flex items-center gap-3">
@@ -576,42 +700,45 @@ export default function FlowEditor({
               </div>
 
               {/* Branch tabs */}
-              <div className="mt-8 border-t border-black/5 pt-6">
-                <p className="mb-3 text-sm font-semibold text-foreground/80">Branches</p>
-                <div className="flex flex-wrap gap-1.5">
-                  {focusedQuestion.branches.map((branch) => {
-                    const isActive = activeBranchId === branch.id;
-                    const fieldName = branch.condition.fieldId;
-                    return (
-                      <button
-                        key={branch.id}
-                        type="button"
-                        onClick={() => setActiveBranchId(branch.id)}
-                        className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
-                          isActive
-                            ? "border-teal-300 bg-teal-50 text-teal-900 shadow-sm"
-                            : "border-black/8 bg-white text-foreground/60 hover:bg-slate-50 hover:text-foreground/80"
-                        }`}
-                      >
-                        {fieldName} {branch.condition.operator} {branch.condition.value}
-                      </button>
-                    );
-                  })}
-                  <button
-                    type="button"
-                    onClick={addBranch}
-                    disabled={fields.length === 0}
-                    className="flex items-center gap-1.5 rounded-full border border-dashed border-foreground/20 px-3 py-1.5 text-xs font-medium text-foreground/50 hover:bg-slate-50 hover:text-foreground/70 disabled:opacity-40"
-                  >
-                    + Add branch
-                  </button>
-                </div>
+              <p className="mb-1.5 text-[10px] font-medium text-foreground/40">Branches</p>
+              <div className="flex flex-wrap gap-1">
+                {focusedQuestion.branches.map((branch) => {
+                  const cfg = OUTCOME_CFG[branch.outcome];
+                  const isActive = activeBranchId === branch.id;
+                  return (
+                    <button
+                      key={branch.id}
+                      type="button"
+                      onClick={() => setActiveBranchId(branch.id)}
+                      className={`flex items-center gap-1.5 rounded-t-md border border-b-0 px-3 py-1.5 text-[11px] transition-colors ${
+                        isActive
+                          ? "border-teal-200 bg-teal-50/60 text-teal-800"
+                          : "border-black/8 bg-[#f7f9f8] text-foreground/50 hover:bg-white hover:text-foreground/70"
+                      }`}
+                    >
+                      <span className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold ${cfg.iconCls}`}>
+                        {cfg.icon}
+                      </span>
+                      <span className="max-w-[160px] truncate text-[11px]">
+                        {describeBranch(branch, fields)}
+                      </span>
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={addBranch}
+                  disabled={fields.length === 0}
+                  className="rounded-t-md border border-b-0 border-dashed border-foreground/15 px-3 py-1.5 text-[11px] text-foreground/35 hover:text-foreground/60 disabled:opacity-40"
+                >
+                  + add branch
+                </button>
               </div>
 
               {/* Active branch body */}
               {activeBranch ? (
                 <div className="mt-4 rounded-xl border border-black/8 bg-slate-50/50 shadow-sm overflow-hidden">
-                  
+
                   {/* Sentence builder */}
                   <div className="p-4 border-b border-black/5 flex flex-col gap-3">
                     <ConditionEditor
@@ -620,7 +747,7 @@ export default function FlowEditor({
                       customVars={customVariables}
                       onChange={(c) => updateBranch(activeBranch.id, (b) => ({ ...b, condition: c }))}
                     />
-                    
+
                     <div className="flex flex-wrap items-start gap-2">
                       <span className="mt-1 text-sm font-medium text-foreground/60">then</span>
                       <div className="flex flex-col gap-3 flex-1 min-w-0">
@@ -641,7 +768,7 @@ export default function FlowEditor({
                             </option>
                           ))}
                         </select>
-                        
+
                         {/* Sub-questions (followups) placed directly inside the "then" block for sentence flow */}
                         {activeBranch.outcome === "followups" && (
                           <div className="flex flex-col gap-2">
@@ -706,7 +833,7 @@ export default function FlowEditor({
               )}
             </div>
 
-            <div className="flex items-center justify-between border-t border-black/5 pt-2">
+            <div className="flex items-center justify-between border-t border-black/5 pt-2 pr-14">
               <button
                 type="button"
                 onClick={deleteQuestion}

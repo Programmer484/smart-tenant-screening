@@ -2,6 +2,15 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { PropertyVariable } from "@/lib/property";
+import { FIELD_VALUE_KINDS, type FieldValueKind } from "@/lib/landlord-field";
+
+const KIND_LABELS: Record<FieldValueKind, string> = {
+  text: "Text",
+  number: "Number",
+  date: "Date",
+  boolean: "Yes/No",
+  enum: "Options",
+};
 
 function generateId() {
   return Math.random().toString(36).slice(2, 9);
@@ -70,16 +79,44 @@ function VariableRow({
                 : "border-foreground/8 bg-foreground/[0.02] text-foreground/60 placeholder:text-foreground/25 focus:border-foreground/20"
             }`}
           />
+          {/* Type */}
+          <select
+            value={row.value_kind ?? "text"}
+            onChange={(e) => onChange({ ...row, value_kind: e.target.value as FieldValueKind })}
+            className="rounded-md border border-foreground/8 bg-foreground/[0.02] px-2 py-1 text-xs text-foreground/60 focus:border-foreground/20 focus:outline-none"
+          >
+            {FIELD_VALUE_KINDS.map((k) => (
+              <option key={k} value={k}>{KIND_LABELS[k]}</option>
+            ))}
+          </select>
         </div>
         {keyError && <p className="text-xs text-red-500">{keyError}</p>}
-        {/* Value */}
-        <input
-          type="text"
-          value={row.value}
-          onChange={(e) => onChange({ ...row, value: e.target.value })}
-          placeholder="Value (e.g. June 1, 2025)"
-          className={`w-full ${inputCls}`}
-        />
+        {/* Value — input type enforced by value_kind */}
+        {(row.value_kind ?? "text") === "boolean" ? (
+          <select
+            value={row.value || "true"}
+            onChange={(e) => onChange({ ...row, value: e.target.value })}
+            className={`w-full ${inputCls}`}
+          >
+            <option value="true">Yes</option>
+            <option value="false">No</option>
+          </select>
+        ) : (
+          <input
+            type={
+              (row.value_kind ?? "text") === "number" ? "number" :
+              (row.value_kind ?? "text") === "date"   ? "date"   : "text"
+            }
+            value={row.value}
+            onChange={(e) => onChange({ ...row, value: e.target.value })}
+            placeholder={
+              (row.value_kind ?? "text") === "number" ? "e.g. 2500" :
+              (row.value_kind ?? "text") === "date"   ? "" :
+              "e.g. June 1, 2025"
+            }
+            className={`w-full ${inputCls}`}
+          />
+        )}
         <p className="text-[10px] text-foreground/35">
           Inserts as <span className="font-mono text-violet-600">{`{{${row.key || "key_name"}}}`}</span> in question text
         </p>
@@ -130,7 +167,7 @@ export default function VariablesSection({
   }
 
   function handleAdd() {
-    update([...rows, { _clientId: generateId(), _isNew: true, id: generateId(), key: "", label: "", value: "" }]);
+    update([...rows, { _clientId: generateId(), _isNew: true, id: generateId(), key: "", label: "", value: "", value_kind: "text" }]);
   }
 
   return (
