@@ -146,7 +146,7 @@ type OutcomeCfg = {
 };
 
 const OUTCOME_CFG: Record<BranchOutcome, OutcomeCfg> = {
-  continue:  { label: "Continue",       icon: "↓", iconCls: "bg-black/5 text-foreground/50",      activeCls: "bg-[#f7f9f8] border-foreground/20 text-foreground/70" },
+  continue:  { label: "Continue",       icon: "↓", iconCls: "bg-black/5 text-foreground/70",      activeCls: "bg-[#f7f9f8] border-foreground/20 text-foreground/70" },
   followups: { label: "Add follow-ups", icon: "+", iconCls: "bg-teal-50 text-teal-700",            activeCls: "bg-teal-50 border-teal-300 text-teal-800" },
   review:    { label: "Manual review",  icon: "!", iconCls: "bg-amber-50 text-amber-700",          activeCls: "bg-amber-50 border-amber-300 text-amber-800" },
   reject:    { label: "Reject",         icon: "×", iconCls: "bg-red-50 text-red-600",              activeCls: "bg-red-50 border-red-300 text-red-700" },
@@ -166,11 +166,12 @@ function ConditionEditor({
   const field = fields.find((f) => f.id === condition.fieldId);
   const ops = field ? (OPERATORS_BY_KIND[field.value_kind] ?? []) : [];
 
-  const selectCls = "rounded border border-foreground/10 bg-white px-2 py-1 text-[11px] text-foreground focus:border-teal-700/40 focus:outline-none";
+  const selectCls = "rounded-md border border-foreground/15 bg-white px-2.5 py-1.5 text-sm font-medium text-foreground shadow-sm focus:border-teal-700/40 focus:outline-none focus:ring-2 focus:ring-teal-700/10";
+  const inputCls = "w-32 rounded-md border border-foreground/15 bg-white px-2.5 py-1.5 text-sm font-medium text-foreground shadow-sm focus:border-teal-700/40 focus:outline-none focus:ring-2 focus:ring-teal-700/10";
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <span className="text-[10px] font-medium text-foreground/40">when</span>
+      <span className="text-sm font-medium text-foreground/60">When</span>
       <select
         value={condition.fieldId}
         onChange={(e) => {
@@ -182,7 +183,7 @@ function ConditionEditor({
       >
         {fields.length === 0 && <option value="">— no fields —</option>}
         {fields.map((f) => (
-          <option key={f.id} value={f.id}>{f.id}</option>
+          <option key={f.id} value={f.id}>{f.label || f.id}</option>
         ))}
       </select>
       <select
@@ -197,8 +198,9 @@ function ConditionEditor({
         value={condition.value}
         onChange={(e) => onChange({ ...condition, value: e.target.value })}
         placeholder="value"
-        className="w-24 rounded border border-foreground/10 bg-white px-2 py-1 font-mono text-[11px] text-foreground focus:border-teal-700/40 focus:outline-none"
+        className={inputCls}
       />
+      <span className="text-sm font-medium text-foreground/60">,</span>
     </div>
   );
 }
@@ -210,17 +212,21 @@ export default function FlowEditor({
   fields,
   onChange,
   onCreateField,
+  onGenerateTargeted,
 }: {
   questions: Question[];
   fields: LandlordField[];
   onChange: (qs: Question[]) => void;
   onCreateField?: (label: string) => string;
+  onGenerateTargeted?: (prompt: string, question: Question) => Promise<{ updatedQuestion?: Question }>;
 }) {
   const [focusedPath, setFocusedPath] = useState<NavPath>([]);
   const [activeBranchId, setActiveBranchId] = useState<string | null>(null);
   const [fieldPickerOpen, setFieldPickerOpen] = useState(false);
   const [fieldPickerAnchor, setFieldPickerAnchor] = useState<DOMRect | null>(null);
   const fieldPickerBtnRef = useRef<HTMLButtonElement>(null);
+  const [aiEditPrompt, setAiEditPrompt] = useState("");
+  const [isGeneratingTargeted, setIsGeneratingTargeted] = useState(false);
 
   const focusedIds = new Set(focusedPath.map((s) => s.questionId));
   const treeItems = buildTree(questions, [], focusedPath, [], 0);
@@ -256,6 +262,20 @@ export default function FlowEditor({
 
   function updateBranch(branchId: string, fn: (b: Branch) => Branch) {
     mutate((q) => ({ ...q, branches: q.branches.map((b) => (b.id === branchId ? fn(b) : b)) }));
+  }
+
+  async function handleTargetedGenerate() {
+    if (!onGenerateTargeted || !focusedQuestion || !aiEditPrompt.trim()) return;
+    setIsGeneratingTargeted(true);
+    try {
+      const res = await onGenerateTargeted(aiEditPrompt, focusedQuestion);
+      if (res.updatedQuestion) {
+        mutate(() => res.updatedQuestion!);
+      }
+      setAiEditPrompt("");
+    } finally {
+      setIsGeneratingTargeted(false);
+    }
   }
 
   // ── Actions ─────────────────────────────────────────────────────────────────
@@ -336,7 +356,7 @@ export default function FlowEditor({
 
       {/* ── Left: flow tree ──────────────────────────────────────────────── */}
       <div className="rounded-lg border border-black/8 bg-white p-2">
-        <p className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-wider text-foreground/30">Flow</p>
+        <p className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-wider text-foreground/70">Flow</p>
         <div className="space-y-px">
           {treeItems.map((item) => {
             const isCurrent = pathsEqual(item.path, focusedPath);
@@ -354,18 +374,18 @@ export default function FlowEditor({
                 className={`flex cursor-pointer items-center gap-1.5 rounded-md py-1 text-xs transition-colors ${
                   isCurrent
                     ? "bg-teal-50 font-medium text-teal-800"
-                    : "text-foreground/50 hover:bg-[#f7f9f8] hover:text-foreground/70"
+                    : "text-foreground/70 hover:bg-[#f7f9f8] hover:text-foreground/70"
                 }`}
                 style={{ paddingLeft: `${8 + item.level * 16}px`, paddingRight: "8px" }}
               >
                 <span className={`w-2.5 shrink-0 text-[9px] ${isCurrent ? "text-teal-400" : "text-foreground/20"}`}>
                   {item.hasChildren ? (isOpen ? "▾" : "▸") : ""}
                 </span>
-                <span className={`w-7 shrink-0 font-mono text-[10px] ${isCurrent ? "text-teal-600" : "text-foreground/35"}`}>
+                <span className={`w-7 shrink-0 font-mono text-[10px] ${isCurrent ? "text-teal-600" : "text-foreground/55"}`}>
                   {item.label}
                 </span>
                 <span className="truncate">
-                  {item.question.text || <em className="opacity-40">untitled</em>}
+                  {item.question.text || <em className="opacity-60">untitled</em>}
                 </span>
               </div>
             );
@@ -383,7 +403,7 @@ export default function FlowEditor({
       {/* ── Right: focused editor ─────────────────────────────────────────── */}
       <div className="flex min-w-0 flex-col rounded-lg border border-black/8 bg-white p-4">
         {!focusedQuestion ? (
-          <div className="flex flex-1 flex-col items-center justify-center gap-2 text-foreground/40">
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 text-foreground/60">
             <p className="text-sm">Select a question from the flow</p>
             <button type="button" onClick={addTopLevelQuestion} className="text-xs text-teal-700 hover:text-teal-900">
               + add first question
@@ -394,7 +414,7 @@ export default function FlowEditor({
 
             {/* Breadcrumb */}
             <div className="flex flex-wrap items-center gap-1.5 border-b border-black/5 pb-3 text-[11px]">
-              <button type="button" onClick={() => { setFocusedPath([]); setActiveBranchId(null); }} className="text-foreground/45 transition-colors hover:text-foreground">
+              <button type="button" onClick={() => { setFocusedPath([]); setActiveBranchId(null); }} className="text-foreground/60 transition-colors hover:text-foreground">
                 Flow
               </button>
               {ancestors.map((anc) => (
@@ -405,7 +425,7 @@ export default function FlowEditor({
                     onClick={() => { setFocusedPath(anc.path); setActiveBranchId(anc.question.branches[0]?.id ?? null); }}
                     className="flex items-center gap-1.5 rounded bg-[#f7f9f8] px-2 py-0.5 text-foreground/60 hover:bg-teal-50 hover:text-teal-800"
                   >
-                    <span className="font-mono text-[10px] text-foreground/35">{anc.label}</span>
+                    <span className="font-mono text-[10px] text-foreground/55">{anc.label}</span>
                     {anc.branch && (
                       <span className="font-mono text-[10px] text-teal-600">
                         {anc.branch.condition.fieldId} {anc.branch.condition.operator} {anc.branch.condition.value}
@@ -429,44 +449,52 @@ export default function FlowEditor({
                 value={focusedQuestion.text}
                 onChange={(e) => mutate((q) => ({ ...q, text: e.target.value }))}
                 placeholder="Question text…"
-                className="mb-4 w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2.5 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
+                className="mb-4 w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2.5 text-sm text-foreground placeholder:text-foreground/70 focus:border-teal-700/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
               />
 
               {/* Linked fields */}
-              <div className="mb-5">
-                <p className="mb-1.5 text-[10px] font-medium text-foreground/40">Linked fields</p>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    ref={fieldPickerBtnRef}
-                    type="button"
-                    onClick={() => {
-                      setFieldPickerAnchor(fieldPickerBtnRef.current?.getBoundingClientRect() ?? null);
-                      setFieldPickerOpen(true);
-                    }}
-                    disabled={fields.length === 0}
-                    className="rounded-lg border border-teal-700/25 bg-teal-50/50 px-3 py-1.5 text-left text-[11px] font-medium text-teal-800 transition-colors hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    {fields.length === 0
-                      ? "Add fields in the Fields tab first"
-                      : focusedQuestion.fieldIds.length === 0
-                        ? "Link fields…"
-                        : `Edit linked fields (${focusedQuestion.fieldIds.length})`}
-                  </button>
-                  {focusedQuestion.fieldIds.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
+              <div className="mb-6 flex items-center gap-3">
+                <span className="text-sm font-medium text-foreground/60">Linked field</span>
+                <div className="flex items-center gap-2">
+                  {focusedQuestion.fieldIds.length > 0 ? (
+                    <>
                       {focusedQuestion.fieldIds.map((fid) => {
                         const f = fields.find((x) => x.id === fid);
                         return (
                           <span
                             key={fid}
                             title={fid}
-                            className="rounded-full border border-teal-200 bg-teal-50 px-2.5 py-0.5 text-[11px] font-medium text-teal-800"
+                            className="rounded-md border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-800 shadow-sm"
                           >
                             {f?.label || f?.id || fid}
                           </span>
                         );
                       })}
-                    </div>
+                      <button
+                        ref={fieldPickerBtnRef}
+                        type="button"
+                        onClick={() => {
+                          setFieldPickerAnchor(fieldPickerBtnRef.current?.getBoundingClientRect() ?? null);
+                          setFieldPickerOpen(true);
+                        }}
+                        className="text-xs font-medium text-teal-700 hover:underline"
+                      >
+                        [Edit]
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      ref={fieldPickerBtnRef}
+                      type="button"
+                      onClick={() => {
+                        setFieldPickerAnchor(fieldPickerBtnRef.current?.getBoundingClientRect() ?? null);
+                        setFieldPickerOpen(true);
+                      }}
+                      disabled={fields.length === 0}
+                      className="rounded-md border border-teal-700/25 bg-teal-50/50 px-3 py-1 text-xs font-medium text-teal-800 transition-colors hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-40 shadow-sm"
+                    >
+                      {fields.length === 0 ? "Add fields in the Fields tab first" : "Link field…"}
+                    </button>
                   )}
                 </div>
                 <FieldPickerPopover
@@ -485,124 +513,109 @@ export default function FlowEditor({
               </div>
 
               {/* Branch tabs */}
-              <p className="mb-1.5 text-[10px] font-medium text-foreground/40">Branches</p>
-              <div className="flex flex-wrap gap-1">
-                {focusedQuestion.branches.map((branch) => {
-                  const cfg = OUTCOME_CFG[branch.outcome];
-                  const isActive = activeBranchId === branch.id;
-                  return (
-                    <button
-                      key={branch.id}
-                      type="button"
-                      onClick={() => setActiveBranchId(branch.id)}
-                      className={`flex items-center gap-1.5 rounded-t-md border border-b-0 px-3 py-1.5 text-[11px] transition-colors ${
-                        isActive
-                          ? "border-teal-200 bg-teal-50/60 text-teal-800"
-                          : "border-black/8 bg-[#f7f9f8] text-foreground/50 hover:bg-white hover:text-foreground/70"
-                      }`}
-                    >
-                      <span className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold ${cfg.iconCls}`}>
-                        {cfg.icon}
-                      </span>
-                      <span className="font-mono text-[10px]">
-                        {branch.condition.fieldId} {branch.condition.operator} {branch.condition.value}
-                      </span>
-                    </button>
-                  );
-                })}
-                <button
-                  type="button"
-                  onClick={addBranch}
-                  disabled={fields.length === 0}
-                  className="rounded-t-md border border-b-0 border-dashed border-foreground/15 px-3 py-1.5 text-[11px] text-foreground/35 hover:text-foreground/60 disabled:opacity-40"
-                >
-                  + add branch
-                </button>
+              <div className="mt-8 border-t border-black/5 pt-6">
+                <p className="mb-3 text-sm font-semibold text-foreground/80">Branches</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {focusedQuestion.branches.map((branch) => {
+                    const isActive = activeBranchId === branch.id;
+                    const fieldName = branch.condition.fieldId;
+                    return (
+                      <button
+                        key={branch.id}
+                        type="button"
+                        onClick={() => setActiveBranchId(branch.id)}
+                        className={`flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
+                          isActive
+                            ? "border-teal-300 bg-teal-50 text-teal-900 shadow-sm"
+                            : "border-black/8 bg-white text-foreground/60 hover:bg-slate-50 hover:text-foreground/80"
+                        }`}
+                      >
+                        {fieldName} {branch.condition.operator} {branch.condition.value}
+                      </button>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    onClick={addBranch}
+                    disabled={fields.length === 0}
+                    className="flex items-center gap-1.5 rounded-full border border-dashed border-foreground/20 px-3 py-1.5 text-xs font-medium text-foreground/50 hover:bg-slate-50 hover:text-foreground/70 disabled:opacity-40"
+                  >
+                    + Add branch
+                  </button>
+                </div>
               </div>
 
               {/* Active branch body */}
               {activeBranch ? (
-                <div className="rounded-b-lg rounded-tr-lg border border-black/8 bg-[#f7f9f8] p-3">
-                  {/* Condition editor */}
-                  <div className="mb-3 border-b border-black/5 pb-3">
+                <div className="mt-4 rounded-xl border border-black/8 bg-slate-50/50 shadow-sm overflow-hidden">
+                  
+                  {/* Sentence builder */}
+                  <div className="p-4 border-b border-black/5 flex flex-col gap-3">
                     <ConditionEditor
                       condition={activeBranch.condition}
                       fields={fields}
                       onChange={(c) => updateBranch(activeBranch.id, (b) => ({ ...b, condition: c }))}
                     />
-                  </div>
-
-                  {/* Outcome picker */}
-                  <div className="mb-3 flex flex-wrap items-center gap-2">
-                    <span className="w-14 shrink-0 text-[10px] text-foreground/40">Outcome</span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {(Object.entries(OUTCOME_CFG) as [BranchOutcome, OutcomeCfg][]).map(([outcome, cfg]) => {
-                        const isActive = activeBranch.outcome === outcome;
-                        return (
-                          <button
-                            key={outcome}
-                            type="button"
-                            onClick={() =>
-                              updateBranch(activeBranch.id, (b) => ({
-                                ...b,
-                                outcome,
-                                subQuestions: outcome === "followups" ? b.subQuestions : [],
-                              }))
-                            }
-                            className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] transition-colors ${
-                              isActive
-                                ? cfg.activeCls
-                                : "border-foreground/10 bg-white text-foreground/50 hover:bg-[#f7f9f8]"
-                            }`}
-                          >
-                            <span className={`flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full text-[9px] font-bold ${cfg.iconCls}`}>
-                              {cfg.icon}
-                            </span>
-                            {cfg.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* Sub-questions (followups) */}
-                  {activeBranch.outcome === "followups" && (
-                    <div className="space-y-1.5">
-                      {activeBranch.subQuestions.map((sq) => {
-                        const sqItem = treeItems.find((t) => t.question.id === sq.id);
-                        return (
-                          <div key={sq.id} className="flex items-center gap-2 rounded-md border border-black/8 bg-white px-3 py-2">
-                            <span className="w-8 shrink-0 font-mono text-[10px] text-teal-600">
-                              {sqItem?.label ?? "—"}
-                            </span>
-                            <span className="flex-1 truncate text-xs text-foreground/70">
-                              {sq.text || <em className="text-foreground/35">untitled</em>}
-                            </span>
-                            <span className="shrink-0 rounded bg-black/5 px-1.5 py-0.5 text-[10px] text-foreground/40">
-                              {sq.fieldIds.length} field{sq.fieldIds.length !== 1 ? "s" : ""}
-                            </span>
+                    
+                    <div className="flex flex-wrap items-start gap-2">
+                      <span className="mt-1 text-sm font-medium text-foreground/60">then</span>
+                      <div className="flex flex-col gap-3 flex-1 min-w-0">
+                        <select
+                          value={activeBranch.outcome}
+                          onChange={(e) =>
+                            updateBranch(activeBranch.id, (b) => ({
+                              ...b,
+                              outcome: e.target.value as BranchOutcome,
+                              subQuestions: e.target.value === "followups" ? b.subQuestions : [],
+                            }))
+                          }
+                          className="w-fit rounded-md border border-foreground/15 bg-white px-2.5 py-1.5 text-sm font-medium text-foreground shadow-sm focus:border-teal-700/40 focus:outline-none focus:ring-2 focus:ring-teal-700/10"
+                        >
+                          {(Object.entries(OUTCOME_CFG) as [BranchOutcome, OutcomeCfg][]).map(([outcome, cfg]) => (
+                            <option key={outcome} value={outcome}>
+                              {cfg.label}
+                            </option>
+                          ))}
+                        </select>
+                        
+                        {/* Sub-questions (followups) placed directly inside the "then" block for sentence flow */}
+                        {activeBranch.outcome === "followups" && (
+                          <div className="flex flex-col gap-2">
+                            {activeBranch.subQuestions.map((sq) => {
+                              const sqItem = treeItems.find((t) => t.question.id === sq.id);
+                              return (
+                                <div key={sq.id} className="flex items-center gap-2 rounded-lg border border-teal-100 bg-teal-50/40 p-2.5 max-w-xl">
+                                  <span className="w-6 shrink-0 font-mono text-[10px] text-teal-600">
+                                    {sqItem?.label ?? "—"}
+                                  </span>
+                                  <span className="flex-1 truncate text-sm text-foreground/80 italic">
+                                    {sq.text ? `"${sq.text}"` : <em className="text-foreground/35">"untitled"</em>}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => openSubQuestion(activeBranch.id, sq.id)}
+                                    className="shrink-0 rounded bg-white px-2 py-1 text-[11px] font-medium text-teal-700 border border-teal-200 shadow-sm hover:bg-teal-50 transition-colors"
+                                  >
+                                    Edit →
+                                  </button>
+                                </div>
+                              );
+                            })}
                             <button
                               type="button"
-                              onClick={() => openSubQuestion(activeBranch.id, sq.id)}
-                              className="shrink-0 text-[10px] text-teal-700 hover:text-teal-900"
+                              onClick={() => addSubQuestion(activeBranch.id)}
+                              className="w-fit text-sm font-medium text-teal-700 hover:text-teal-900 mt-1"
                             >
-                              open ↗
+                              + Add follow-up question
                             </button>
                           </div>
-                        );
-                      })}
-                      <button
-                        type="button"
-                        onClick={() => addSubQuestion(activeBranch.id)}
-                        className="text-[11px] text-teal-700 hover:text-teal-900"
-                      >
-                        + add follow-up question
-                      </button>
+                        )}
+                      </div>
                     </div>
-                  )}
+                  </div>
 
                   {/* Delete branch */}
-                  <div className="mt-3 border-t border-black/5 pt-2.5">
+                  <div className="bg-slate-100/50 p-2.5 flex justify-end">
                     <button
                       type="button"
                       onClick={() => deleteBranch(activeBranch.id)}
@@ -614,7 +627,7 @@ export default function FlowEditor({
                 </div>
               ) : (
                 <div className="rounded-b-lg rounded-tr-lg border border-dashed border-foreground/10 p-3">
-                  <p className="text-[11px] italic text-foreground/35">
+                  <p className="text-[11px] italic text-foreground/55">
                     {focusedQuestion.branches.length === 0
                       ? "No branches — always continues to the next question."
                       : "Select a branch above to edit it."}
@@ -623,7 +636,7 @@ export default function FlowEditor({
               )}
 
               {focusedQuestion.branches.length > 0 && (
-                <p className="mt-2 text-[11px] italic text-foreground/35">
+                <p className="mt-2 text-[11px] italic text-foreground/55">
                   Default: continue if no branch matches.
                 </p>
               )}
@@ -641,6 +654,8 @@ export default function FlowEditor({
 
           </div>
         )}
+
+
       </div>
     </div>
   );

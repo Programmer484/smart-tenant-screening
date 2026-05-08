@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { testCases } from "@/lib/testing/aiQuestionTestCases";
-import { runTests, MockOutputProvider } from "@/lib/testing/runner";
+import { runTests, MockOutputProvider, RealGenerationOutputProvider } from "@/lib/testing/runner";
 
 export async function POST(req: Request) {
   const apiKey = process.env.CLAUDE_API_KEY;
@@ -27,7 +27,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "No tests found to run" }, { status: 400 });
   }
 
-  const provider = new MockOutputProvider();
+  const provider = rec.useRealAI ? new RealGenerationOutputProvider() : new MockOutputProvider();
 
   try {
     const results = await runTests(apiKey, testsToRun, provider);

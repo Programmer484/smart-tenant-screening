@@ -13,6 +13,7 @@ export default function AiQuestionTestsPage() {
   const [results, setResults] = useState<TestResult[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [useRealAI, setUseRealAI] = useState(false);
 
   useEffect(() => {
     fetch("/api/testing/run")
@@ -52,7 +53,7 @@ export default function AiQuestionTestsPage() {
       const res = await fetch("/api/testing/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ testIds: Array.from(selectedIds) }),
+        body: JSON.stringify({ testIds: Array.from(selectedIds), useRealAI }),
       });
       const data = await res.json();
       
@@ -81,7 +82,7 @@ export default function AiQuestionTestsPage() {
       const res = await fetch("/api/testing/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ testIds: allIds }),
+        body: JSON.stringify({ testIds: allIds, useRealAI }),
       });
       const data = await res.json();
       
@@ -113,6 +114,15 @@ export default function AiQuestionTestsPage() {
         <div className="flex justify-between items-center mb-4">
           <h2 className="text-xl font-semibold">Available Test Cases</h2>
           <div className="flex gap-2">
+            <label className="flex items-center gap-2 mr-4 text-sm font-medium text-gray-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={useRealAI}
+                onChange={(e) => setUseRealAI(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-600"
+              />
+              Use Real AI
+            </label>
             <button
               onClick={handleSelectAll}
               className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-100 rounded hover:bg-gray-200"

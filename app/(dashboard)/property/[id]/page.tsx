@@ -22,7 +22,7 @@ import { ShareLinkModal } from "@/app/components/ShareLinkModal";
 import { RuleProposalModal, type Proposal } from "@/app/components/RuleProposalModal";
 import LandlordFieldsSection from "@/app/components/LandlordFieldsSection";
 
-const TABS = ["Fields", "Questions", "Rules", "Links", "AI Behavior"] as const;
+const TABS = ["Details", "Fields", "Questions", "Rules", "Links", "AI Behavior"] as const;
 type Tab = (typeof TABS)[number];
 
 function generateId() {
@@ -63,8 +63,12 @@ export default function PropertySetupPage() {
   const [aiInstructions, setAiInstructions] = useState<AiInstructions>(DEFAULT_AI_INSTRUCTIONS);
   const [slug, setSlug] = useState("");
   const [shareModalOpen, setShareModalOpen] = useState(false);
+  const [renameModalOpen, setRenameModalOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
+  const [renamePending, setRenamePending] = useState(false);
+  const renameDialogRef = useRef<HTMLDialogElement>(null);
 
-  const [activeTab, setActiveTab] = useState<Tab>("Questions");
+  const [activeTab, setActiveTab] = useState<Tab>("Details");
   const [loadingPhase, setLoadingPhase] = useState<null | "questions" | "rules">(null);
   const [saving, setSaving] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
@@ -74,10 +78,17 @@ export default function PropertySetupPage() {
   const [showSaved, setShowSaved] = useState(false);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedIndicatorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const saveRef = useRef<(_?: Partial<PropertyRecord>) => Promise<void>>(async () => {});
+  const saveRef = useRef<(_?: Partial<PropertyRecord>) => Promise<{error?: any} | void>>(async () => {});
   const serializedStateRef = useRef("");
   const hasLoadedRef = useRef(false);
   const [questionsPrompt, setQuestionsPrompt] = useState("");
+  const [questionsAiOpen, setQuestionsAiOpen] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [rulesPrompt, setRulesPrompt] = useState("");
   const [ruleProposal, setRuleProposal] = useState<Proposal | null>(null);
   const [fieldDeleteIndex, setFieldDeleteIndex] = useState<number | null>(null);
@@ -145,12 +156,38 @@ export default function PropertySetupPage() {
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [dirty]);
 
+  useEffect(() => {
+    const el = renameDialogRef.current;
+    if (!el) return;
+    if (renameModalOpen && !el.open) {
+      setRenameValue(title);
+      el.showModal();
+    } else if (!renameModalOpen && el.open) {
+      el.close();
+    }
+  }, [renameModalOpen, title]);
+
+  async function handleRenameSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!renameValue.trim() || renameValue.trim() === title) {
+      setRenameModalOpen(false);
+      return;
+    }
+    setRenamePending(true);
+    const res = await save({ title: renameValue.trim() });
+    setRenamePending(false);
+    if (!res?.error) {
+      setRenameModalOpen(false);
+    }
+  }
+
   // ── Save ──
   const save = useCallback(
     async (overrides?: Partial<PropertyRecord>) => {
       setSaving(true);
       
-      const newTitle = title.trim() || "New Property";
+      const titleToSave = overrides?.title !== undefined ? overrides.title : title;
+      const newTitle = titleToSave.trim() || "New Property";
       const newSlug = newTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 
       const { error } = await supabase
@@ -176,10 +213,14 @@ export default function PropertySetupPage() {
         } else {
             toast.error("Failed to save"); 
         }
+        return { error };
       }
       else {
+        if (overrides?.title !== undefined) {
+          setTitle(newTitle);
+        }
         setSlug(newSlug);
-        lastSavedRef.current = JSON.stringify({ title, description, fields, questions, rules, links, aiInstructions });
+        lastSavedRef.current = JSON.stringify({ title: newTitle, description, fields, questions, rules, links, aiInstructions });
         setDirty(false);
         if (savedIndicatorTimerRef.current) clearTimeout(savedIndicatorTimerRef.current);
         setShowSaved(true);
@@ -187,6 +228,7 @@ export default function PropertySetupPage() {
           setShowSaved(false);
           savedIndicatorTimerRef.current = null;
         }, 2000);
+        return { error: null };
       }
     },
     [id, title, description, fields, questions, rules, links, aiInstructions, supabase], // eslint-disable-line react-hooks/exhaustive-deps
@@ -272,6 +314,57 @@ export default function PropertySetupPage() {
   }, [id, supabase]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Generate questions with prompt ──
+  async function startRecording() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      recorder.start();
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+      setRecordingSeconds(0);
+      let secs = 0;
+      recordingTimerRef.current = setInterval(() => {
+        secs += 1;
+        setRecordingSeconds(secs);
+        if (secs >= 300) stopRecording();
+      }, 1000);
+    } catch {
+      toast.error("Microphone access denied");
+    }
+  }
+
+  async function stopRecording() {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) return;
+    if (recordingTimerRef.current) { clearInterval(recordingTimerRef.current); recordingTimerRef.current = null; }
+    setIsRecording(false);
+    setIsTranscribing(true);
+    await new Promise<void>((resolve) => {
+      recorder.onstop = () => resolve();
+      if (recorder.state !== "inactive") recorder.stop();
+      else resolve();
+    });
+    recorder.stream.getTracks().forEach((t) => t.stop());
+    mediaRecorderRef.current = null;
+    try {
+      const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+      const form = new FormData();
+      form.append("audio", blob, "recording.webm");
+      const res = await fetch("/api/transcribe", { method: "POST", body: form });
+      if (!res.ok) throw new Error("Transcription failed");
+      const { text } = await res.json() as { text: string };
+      if (text.trim()) setQuestionsPrompt(text.trim());
+    } catch {
+      toast.error("Transcription failed — please try again");
+    } finally {
+      setIsTranscribing(false);
+      setRecordingSeconds(0);
+      audioChunksRef.current = [];
+    }
+  }
+
   async function handleGenerateQuestions(prompt: string) {
     if (!prompt.trim()) {
       toast.error("Enter a prompt describing what questions to generate");
@@ -328,6 +421,50 @@ export default function PropertySetupPage() {
       toast.error("Generation failed — please try again");
     } finally {
       setLoadingPhase(null);
+    }
+  }
+
+  // ── Generate specific question with prompt ──
+  async function handleGenerateTargeted(prompt: string, question: Question) {
+    try {
+      const res = await fetch("/api/generate-fields", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          description: `Modify this specific question and its branches to: ${prompt}. \n\nIMPORTANT: Return EXACTLY ONE question in the 'questions' array, which must have the id "${question.id}". Here is the current JSON of the question:\n${JSON.stringify(question, null, 2)}`,
+          existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
+          existingQuestions: [{ id: question.id, text: question.text, fieldIds: question.fieldIds }],
+        }),
+      });
+      const data = await res.json();
+
+      if (data.ok === false) {
+        toast.error(data.error ?? "Generation failed");
+        return {};
+      }
+
+      const proposedFields: LandlordField[] = data.newFields ?? [];
+      const proposedQuestions: Question[] = data.questions ?? [];
+
+      let updatedQ = proposedQuestions.find(q => q.id === question.id) || proposedQuestions[0];
+      if (!updatedQ) {
+        toast.error("AI didn't return an updated question");
+        return {};
+      }
+
+      // Force same ID to ensure we replace the exact targeted question in FlowEditor
+      updatedQ = { ...updatedQ, id: question.id };
+
+      if (proposedFields.length > 0) {
+        setFields(prev => [...prev, ...proposedFields.map(f => ({ ...f, _isNew: true, _clientId: generateId() }) as unknown as LandlordField)]);
+      }
+
+      toast.success("Question updated via AI");
+      return { updatedQuestion: updatedQ };
+    } catch (err) {
+      console.error("[generateTargeted]", err);
+      toast.error("Generation failed — please try again");
+      return {};
     }
   }
 
@@ -538,7 +675,7 @@ export default function PropertySetupPage() {
     <>
       {/* ── Sticky sub-header ─────────────────────────────────────────── */}
       <div className="sticky top-0 z-10 border-b border-black/8 bg-white/95 backdrop-blur-sm">
-        <div className="mx-auto flex max-w-3xl items-center justify-between px-6 py-3">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-3">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-sm">
             <Link href="/" className="shrink-0 text-[#1a2e2a]/45 transition-colors hover:text-[#1a2e2a]">
               Properties
@@ -589,7 +726,7 @@ export default function PropertySetupPage() {
       </div>
 
       {/* ── Content ───────────────────────────────────────────────────── */}
-      <div className="mx-auto max-w-3xl space-y-6 px-6 py-8">
+      <div className="mx-auto max-w-5xl space-y-6 px-6 py-8">
 
         {/* Onboarding guide */}
         {isNew && (
@@ -612,29 +749,6 @@ export default function PropertySetupPage() {
           </section>
         )}
 
-        {/* Property details card */}
-        <section className="rounded-xl border border-black/8 bg-white shadow-sm">
-          <div className="space-y-4 p-6">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-[#1a2e2a]/40">
-              Property details
-            </h2>
-            <input
-              type="text"
-              placeholder="Property title"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              className="w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-4 py-2.5 text-base font-semibold text-foreground placeholder:font-normal placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
-            />
-            <textarea
-              ref={descRef}
-              placeholder="Describe your property — rent, rules, requirements, pet policy, lease length, etc."
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              className="min-h-[120px] w-full resize-none overflow-hidden rounded-lg border border-foreground/10 bg-[#f7f9f8] px-4 py-3 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
-            />
-          </div>
-        </section>
-
         {/* Configuration card */}
         <section className="rounded-xl border border-black/8 bg-white shadow-sm">
           {/* Tab bar */}
@@ -651,7 +765,7 @@ export default function PropertySetupPage() {
                 }}
                 className={`px-3 py-3 text-sm font-medium transition-colors ${activeTab === tab
                   ? "border-b-2 border-teal-700 text-teal-700"
-                  : "text-foreground/45 hover:text-foreground/70"
+                  : "text-foreground/60 hover:text-foreground/70"
                   }`}
               >
                 {tab}
@@ -660,15 +774,44 @@ export default function PropertySetupPage() {
           </div>
 
           <div className="p-6">
+            {/* ── Details Tab ── */}
+            {activeTab === "Details" && (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-sm font-medium text-foreground/80">Property details</h3>
+                  <p className="text-xs text-foreground/60">
+                    Set the title and provide a detailed description of the property. This description is used by the AI to answer applicant questions.
+                  </p>
+                </div>
+                <div className="flex items-center gap-4 w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-4 py-2.5">
+                  <div className="text-base font-semibold text-foreground flex-1 truncate">
+                    {title || "Untitled"}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setRenameModalOpen(true)}
+                    className="shrink-0 rounded-md border border-black/10 bg-white px-3 py-1 text-xs font-medium text-[#1a2e2a]/70 shadow-sm transition-colors hover:bg-black/5 hover:text-[#1a2e2a]"
+                  >
+                    Rename
+                  </button>
+                </div>
+                <textarea
+                  ref={descRef}
+                  placeholder="Describe your property — rent, rules, requirements, pet policy, lease length, etc."
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  className="min-h-[120px] w-full resize-none overflow-hidden rounded-lg border border-foreground/10 bg-[#f7f9f8] px-4 py-3 text-sm text-foreground placeholder:text-foreground/70 focus:border-teal-700/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
+                />
+              </div>
+            )}
+
             {/* ── Fields Tab ── */}
             {activeTab === "Fields" && (
               <div className="space-y-4">
                 <div>
                   <h3 className="text-sm font-medium text-foreground/80">Data schema</h3>
-                  <p className="text-xs text-foreground/40">
-                    Define fields to store (used by screening rules and interview questions). Expand{" "}
-                    <strong className="text-foreground/55">Show field only when…</strong> on a field to
-                    gate it until other answers match (e.g. second occupant only if adults ≥ 2). Eligibility
+                  <p className="text-xs text-foreground/60">
+                    Define fields to store (used by screening rules and interview questions). Eligibility
                     reject/require rules stay on the Rules tab.
                   </p>
                 </div>
@@ -677,8 +820,6 @@ export default function PropertySetupPage() {
                   fields={fields}
                   onChange={setFields}
                   allFields={fields}
-                  rules={rules}
-                  onRulesChange={setRules}
                   onBeforeDelete={(field, index) => {
                     requestDeleteField(index);
                     return false;
@@ -689,39 +830,12 @@ export default function PropertySetupPage() {
 
             {/* ── Questions Tab ── */}
             {activeTab === "Questions" && (
-              <div className="space-y-4">
-                {/* Generate prompt */}
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={questionsPrompt}
-                    onChange={(e) => setQuestionsPrompt(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !loadingPhase && questionsPrompt.trim()) {
-                        e.preventDefault();
-                        void handleGenerateQuestions(questionsPrompt).then(() => setQuestionsPrompt(""));
-                      }
-                    }}
-                    placeholder="e.g. Ask about number of occupants, pets, income, and move-in date"
-                    className="flex-1 rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void handleGenerateQuestions(questionsPrompt).then(() => setQuestionsPrompt(""))}
-                    disabled={!questionsPrompt.trim() || loadingPhase !== null}
-                    className="flex shrink-0 items-center gap-1.5 rounded-lg border border-teal-700/30 bg-teal-50 px-3 py-2 text-xs font-medium text-teal-700 transition-colors hover:bg-teal-100 disabled:opacity-40"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
-                      <path d="M7 1v3M7 10v3M1 7h3M10 7h3M2.75 2.75l2.12 2.12M9.13 9.13l2.12 2.12M11.25 2.75l-2.12 2.12M4.87 9.13l-2.12 2.12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-                    </svg>
-                    {loadingPhase === "questions" ? "Generating…" : "Generate"}
-                  </button>
-                </div>
-
+              <div className="relative space-y-4">
                 <FlowEditor
                   questions={questions}
                   fields={fields}
                   onChange={setQuestions}
+                  onGenerateTargeted={handleGenerateTargeted}
                   onCreateField={(label) => {
                     const baseId = label
                       ? label.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim().replace(/\s+/g, "_").slice(0, 40)
@@ -741,6 +855,90 @@ export default function PropertySetupPage() {
                     return newId;
                   }}
                 />
+
+                {/* Floating AI button */}
+                <div className="absolute bottom-4 right-4">
+                  {questionsAiOpen ? (
+                    <div className="flex w-80 flex-col gap-2 rounded-xl border border-teal-700/20 bg-white p-3 shadow-lg">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-medium text-foreground/60">Generate with AI</span>
+                        <button
+                          type="button"
+                          onClick={() => { setQuestionsAiOpen(false); setQuestionsPrompt(""); }}
+                          aria-label="Close"
+                          className="rounded p-0.5 text-foreground/40 hover:text-foreground/70"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+                            <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                          </svg>
+                        </button>
+                      </div>
+                      <textarea
+                        rows={4}
+                        value={questionsPrompt}
+                        onChange={(e) => setQuestionsPrompt(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Escape") { setQuestionsAiOpen(false); setQuestionsPrompt(""); } }}
+                        placeholder="e.g. Ask about number of occupants, pets, income, and move-in date"
+                        autoFocus
+                        disabled={isTranscribing}
+                        className="w-full resize-none rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm text-foreground placeholder:text-foreground/50 focus:border-teal-700/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20 disabled:opacity-50"
+                      />
+                      <div className="flex items-center gap-2">
+                        {/* Mic button */}
+                        <button
+                          type="button"
+                          onClick={() => void (isRecording ? stopRecording() : startRecording())}
+                          disabled={isTranscribing || loadingPhase !== null}
+                          aria-label={isRecording ? "Stop recording" : "Start recording"}
+                          className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${isRecording ? "bg-red-500 text-white" : "bg-foreground/8 text-foreground/60 hover:bg-foreground/12 hover:text-foreground/80"}`}
+                        >
+                          {isRecording && (
+                            <span className="absolute inset-0 animate-ping rounded-full bg-red-400 opacity-50" />
+                          )}
+                          {isTranscribing ? (
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="animate-spin" aria-hidden>
+                              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5" strokeDasharray="40 20" />
+                            </svg>
+                          ) : (
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden>
+                              <rect x="9" y="2" width="6" height="13" rx="3" fill="currentColor" />
+                              <path d="M5 10a7 7 0 0014 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                              <line x1="12" y1="19" x2="12" y2="23" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                            </svg>
+                          )}
+                        </button>
+                        {/* Timer */}
+                        {isRecording && (
+                          <span className="font-mono text-xs tabular-nums text-red-500">
+                            {`${Math.floor(recordingSeconds / 60)}:${String(recordingSeconds % 60).padStart(2, "0")}`}
+                            <span className="ml-1 text-red-400/70">/ 5:00</span>
+                          </span>
+                        )}
+                        <div className="ml-auto">
+                          <button
+                            type="button"
+                            onClick={() => void handleGenerateQuestions(questionsPrompt).then(() => { setQuestionsPrompt(""); setQuestionsAiOpen(false); })}
+                            disabled={!questionsPrompt.trim() || loadingPhase !== null || isRecording || isTranscribing}
+                            className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-teal-800 disabled:opacity-60"
+                          >
+                            {loadingPhase === "questions" ? "Generating…" : "Generate with AI"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setQuestionsAiOpen(true)}
+                      aria-label="Generate with AI"
+                      className="flex h-10 w-10 items-center justify-center rounded-full bg-teal-700 text-white shadow-md transition-colors hover:bg-teal-800"
+                    >
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+                        <path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6L12 2z" fill="currentColor" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
               </div>
             )}
 
@@ -748,7 +946,7 @@ export default function PropertySetupPage() {
             {activeTab === "Rules" && (
               <div className="space-y-6">
                 <div className="flex flex-col gap-2">
-                  <p className="text-xs text-foreground/40">
+                  <p className="text-xs text-foreground/60">
                     Describe what rules to create — e.g. rejection criteria or acceptance profiles.
                   </p>
                   <div className="flex gap-2">
@@ -763,18 +961,18 @@ export default function PropertySetupPage() {
                         }
                       }}
                       placeholder="e.g. Reject smokers. Allow max 2 adults, or 3 if family with child."
-                      className="flex-1 rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
+                      className="flex-1 rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm text-foreground placeholder:text-foreground/70 focus:border-teal-700/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
                     />
                     <button
                       type="button"
                       onClick={() => void handleGenerateRules(rulesPrompt).then(() => setRulesPrompt(""))}
                       disabled={!rulesPrompt.trim() || loadingPhase !== null || fields.length === 0}
-                      className="flex shrink-0 items-center gap-1.5 rounded-lg border border-teal-700/30 bg-teal-50 px-3 py-2 text-xs font-medium text-teal-700 transition-colors hover:bg-teal-100 disabled:opacity-40"
+                      className="flex shrink-0 items-center gap-1.5 rounded-lg bg-teal-700 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-teal-800 disabled:opacity-60"
                     >
                       <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
                         <path d="M7 1v3M7 10v3M1 7h3M10 7h3M2.75 2.75l2.12 2.12M9.13 9.13l2.12 2.12M11.25 2.75l-2.12 2.12M4.87 9.13l-2.12 2.12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
                       </svg>
-                      {loadingPhase === "rules" ? "Generating…" : "Generate"}
+                      {loadingPhase === "rules" ? "Generating…" : "Generate with AI"}
                     </button>
                   </div>
                 </div>
@@ -794,11 +992,11 @@ export default function PropertySetupPage() {
                 </p>
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-foreground/60">Video tour link</label>
-                  <input type="url" placeholder="https://…" value={links.videoUrl} onChange={(e) => setLinks((prev) => ({ ...prev, videoUrl: e.target.value }))} className="w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm focus:border-teal-700/40 focus:bg-white focus:outline-none" />
+                  <input type="url" placeholder="https://…" value={links.videoUrl} onChange={(e) => setLinks((prev) => ({ ...prev, videoUrl: e.target.value }))} className="w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm focus:border-teal-700/60 focus:bg-white focus:outline-none" />
                 </div>
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-foreground/60">Booking link</label>
-                  <input type="url" placeholder="https://…" value={links.bookingUrl} onChange={(e) => setLinks((prev) => ({ ...prev, bookingUrl: e.target.value }))} className="w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm focus:border-teal-700/40 focus:bg-white focus:outline-none" />
+                  <input type="url" placeholder="https://…" value={links.bookingUrl} onChange={(e) => setLinks((prev) => ({ ...prev, bookingUrl: e.target.value }))} className="w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm focus:border-teal-700/60 focus:bg-white focus:outline-none" />
                 </div>
               </div>
             )}
@@ -811,18 +1009,18 @@ export default function PropertySetupPage() {
                   <div className="grid gap-4 sm:grid-cols-2">
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-foreground/60">Off-topic limit</label>
-                      <p className="text-[11px] text-foreground/35">Consecutive off-topic messages before auto-rejection. 0 = unlimited.</p>
-                      <input type="number" min={0} value={aiInstructions.offTopicLimit ?? 3} onChange={(e) => setAiInstructions((prev) => ({ ...prev, offTopicLimit: Math.max(0, parseInt(e.target.value) || 0) }))} className="w-24 rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm focus:border-teal-700/40 focus:outline-none" />
+                      <p className="text-[11px] text-foreground/55">Consecutive off-topic messages before auto-rejection. 0 = unlimited.</p>
+                      <input type="number" min={0} value={aiInstructions.offTopicLimit ?? 3} onChange={(e) => setAiInstructions((prev) => ({ ...prev, offTopicLimit: Math.max(0, parseInt(e.target.value) || 0) }))} className="w-24 rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm focus:border-teal-700/60 focus:outline-none" />
                     </div>
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-foreground/60">Post-qualified follow-ups</label>
-                      <p className="text-[11px] text-foreground/35">Messages allowed after qualification. 0 = close immediately.</p>
-                      <input type="number" min={0} value={aiInstructions.qualifiedFollowUps ?? 3} onChange={(e) => setAiInstructions((prev) => ({ ...prev, qualifiedFollowUps: Math.max(0, parseInt(e.target.value) || 0) }))} className="w-24 rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm focus:border-teal-700/40 focus:outline-none" />
+                      <p className="text-[11px] text-foreground/55">Messages allowed after qualification. 0 = close immediately.</p>
+                      <input type="number" min={0} value={aiInstructions.qualifiedFollowUps ?? 3} onChange={(e) => setAiInstructions((prev) => ({ ...prev, qualifiedFollowUps: Math.max(0, parseInt(e.target.value) || 0) }))} className="w-24 rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm focus:border-teal-700/60 focus:outline-none" />
                     </div>
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-foreground/60">Unknown info handling</label>
-                    <p className="text-[11px] text-foreground/35">When an applicant asks about something not in the description.</p>
+                    <p className="text-[11px] text-foreground/55">When an applicant asks about something not in the description.</p>
                     <div className="flex gap-4 pt-1">
                       <label className="flex items-center gap-2 text-sm text-foreground/70">
                         <input type="radio" name="unknownInfo" checked={(aiInstructions.unknownInfoBehavior ?? "deflect") === "deflect"} onChange={() => setAiInstructions((prev) => ({ ...prev, unknownInfoBehavior: "deflect" }))} className="accent-teal-700" />
@@ -840,48 +1038,48 @@ export default function PropertySetupPage() {
                   <h3 className="text-sm font-medium text-foreground/80">Eligibility responses</h3>
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-foreground/60">First concern (clarification)</label>
-                    <p className="text-[11px] text-foreground/35">How the AI should respond when an applicant first fails a rule.</p>
-                    <textarea rows={2} value={aiInstructions.clarificationPrompt} onChange={(e) => setAiInstructions((prev) => ({ ...prev, clarificationPrompt: e.target.value }))} placeholder="e.g. Let the applicant know their answer doesn't meet the requirement and give them a chance to correct it." className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:outline-none" />
+                    <p className="text-[11px] text-foreground/55">How the AI should respond when an applicant first fails a rule.</p>
+                    <textarea rows={2} value={aiInstructions.clarificationPrompt} onChange={(e) => setAiInstructions((prev) => ({ ...prev, clarificationPrompt: e.target.value }))} placeholder="e.g. Let the applicant know their answer doesn't meet the requirement and give them a chance to correct it." className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm text-foreground placeholder:text-foreground/70 focus:border-teal-700/60 focus:outline-none" />
                   </div>
                   <div className="space-y-1">
                     <label className="text-xs font-medium text-foreground/60">Confirmed rejection</label>
-                    <p className="text-[11px] text-foreground/35">How the AI should respond when an applicant still fails after clarification.</p>
-                    <textarea rows={2} value={aiInstructions.rejectionPrompt} onChange={(e) => setAiInstructions((prev) => ({ ...prev, rejectionPrompt: e.target.value }))} placeholder="e.g. Let the applicant know they don't meet the requirement, state the reason, and close the conversation." className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:outline-none" />
+                    <p className="text-[11px] text-foreground/55">How the AI should respond when an applicant still fails after clarification.</p>
+                    <textarea rows={2} value={aiInstructions.rejectionPrompt} onChange={(e) => setAiInstructions((prev) => ({ ...prev, rejectionPrompt: e.target.value }))} placeholder="e.g. Let the applicant know they don't meet the requirement, state the reason, and close the conversation." className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm text-foreground placeholder:text-foreground/70 focus:border-teal-700/60 focus:outline-none" />
                   </div>
                 </div>
 
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-foreground/80">Style instructions</label>
-                  <p className="text-xs text-foreground/40">Tell the AI how to behave — tone, formatting, how to handle specific situations.</p>
-                  <textarea rows={5} value={aiInstructions.style} onChange={(e) => setAiInstructions((prev) => ({ ...prev, style: e.target.value }))} placeholder="e.g. Be concise. Use a friendly but professional tone." className="w-full resize-none rounded-lg border border-foreground/10 bg-[#f7f9f8] px-4 py-3 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20" />
+                  <p className="text-xs text-foreground/60">Tell the AI how to behave — tone, formatting, how to handle specific situations.</p>
+                  <textarea rows={5} value={aiInstructions.style} onChange={(e) => setAiInstructions((prev) => ({ ...prev, style: e.target.value }))} placeholder="e.g. Be concise. Use a friendly but professional tone." className="w-full resize-none rounded-lg border border-foreground/10 bg-[#f7f9f8] px-4 py-3 text-sm text-foreground placeholder:text-foreground/70 focus:border-teal-700/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20" />
                 </div>
 
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
                     <div>
                       <label className="text-sm font-medium text-foreground/80">Example conversations</label>
-                      <p className="text-xs text-foreground/40">Show the AI how you want it to respond in specific scenarios.</p>
+                      <p className="text-xs text-foreground/60">Show the AI how you want it to respond in specific scenarios.</p>
                     </div>
                     <button type="button" onClick={() => setAiInstructions((prev) => ({ ...prev, examples: [...(prev.examples ?? []), { user: "", assistant: "" }] }))} className="text-sm text-teal-700 hover:underline">
                       + Add example
                     </button>
                   </div>
                   {(aiInstructions.examples ?? []).length === 0 && (
-                    <p className="text-sm text-foreground/30">No examples yet.</p>
+                    <p className="text-sm text-foreground/70">No examples yet.</p>
                   )}
                   {(aiInstructions.examples ?? []).map((ex, i) => (
                     <div key={i} className="space-y-2 rounded-lg border border-foreground/8 bg-[#f7f9f8] p-4">
                       <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-semibold uppercase tracking-wider text-foreground/35">Example {i + 1}</span>
-                        <button type="button" onClick={() => setAiInstructions((prev) => ({ ...prev, examples: (prev.examples ?? []).filter((_, j) => j !== i) }))} className="text-xs text-foreground/30 hover:text-red-500">Remove</button>
+                        <span className="text-[11px] font-semibold uppercase tracking-wider text-foreground/55">Example {i + 1}</span>
+                        <button type="button" onClick={() => setAiInstructions((prev) => ({ ...prev, examples: (prev.examples ?? []).filter((_, j) => j !== i) }))} className="text-xs text-foreground/70 hover:text-red-500">Remove</button>
                       </div>
                       <div>
-                        <label className="mb-1 block text-xs text-foreground/50">Tenant says:</label>
-                        <input type="text" value={ex.user} onChange={(e) => { const next = [...(aiInstructions.examples ?? [])]; next[i] = { ...next[i], user: e.target.value }; setAiInstructions((prev) => ({ ...prev, examples: next })); }} placeholder="e.g. Is the apartment pet-friendly?" className="w-full rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm focus:border-teal-700/40 focus:outline-none" />
+                        <label className="mb-1 block text-xs text-foreground/70">Tenant says:</label>
+                        <input type="text" value={ex.user} onChange={(e) => { const next = [...(aiInstructions.examples ?? [])]; next[i] = { ...next[i], user: e.target.value }; setAiInstructions((prev) => ({ ...prev, examples: next })); }} placeholder="e.g. Is the apartment pet-friendly?" className="w-full rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm focus:border-teal-700/60 focus:outline-none" />
                       </div>
                       <div>
-                        <label className="mb-1 block text-xs text-foreground/50">AI should respond:</label>
-                        <textarea rows={2} value={ex.assistant} onChange={(e) => { const next = [...(aiInstructions.examples ?? [])]; next[i] = { ...next[i], assistant: e.target.value }; setAiInstructions((prev) => ({ ...prev, examples: next })); }} placeholder="e.g. We do allow small pets with a $500 deposit. Do you have any pets?" className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm focus:border-teal-700/40 focus:outline-none" />
+                        <label className="mb-1 block text-xs text-foreground/70">AI should respond:</label>
+                        <textarea rows={2} value={ex.assistant} onChange={(e) => { const next = [...(aiInstructions.examples ?? [])]; next[i] = { ...next[i], assistant: e.target.value }; setAiInstructions((prev) => ({ ...prev, examples: next })); }} placeholder="e.g. We do allow small pets with a $500 deposit. Do you have any pets?" className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm focus:border-teal-700/60 focus:outline-none" />
                       </div>
                     </div>
                   ))}
@@ -934,6 +1132,47 @@ export default function PropertySetupPage() {
         onConfirm={() => confirmDeleteField()}
         onCancel={() => setFieldDeleteIndex(null)}
       />
+      {renameModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-xl border border-black/8 bg-white p-0 shadow-xl">
+            <form onSubmit={handleRenameSubmit} className="p-6">
+              <h3 className="text-sm font-semibold text-[#1a2e2a]">Rename Property</h3>
+              <p className="mt-2 text-sm text-[#1a2e2a]/60">
+                Enter a unique name for this property. This will be used in the chat link.
+              </p>
+              <div className="mt-4">
+                <input
+                  type="text"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  placeholder="e.g. 123 Main St"
+                  autoFocus
+                  disabled={renamePending}
+                  className="w-full rounded-lg border border-black/10 px-3 py-2 text-sm focus:border-teal-700/40 focus:outline-none focus:ring-2 focus:ring-teal-700/20 disabled:opacity-60"
+                />
+              </div>
+              <div className="mt-6 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRenameModalOpen(false)}
+                  disabled={renamePending}
+                  className="rounded-lg border border-black/10 px-4 py-2 text-sm text-[#1a2e2a]/60 transition-colors hover:bg-[#f7f9f8] disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={renamePending || !renameValue.trim() || renameValue.trim() === title}
+                  className="rounded-lg bg-teal-700 px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                >
+                  {renamePending ? "Saving..." : "Save"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Share Link Modal */}
       <ShareLinkModal 
         open={shareModalOpen} 

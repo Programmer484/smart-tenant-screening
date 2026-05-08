@@ -24,12 +24,42 @@ export class MockOutputProvider implements OutputProvider {
   }
 }
 
+import { POST as generateFields } from "@/app/api/generate-fields/route";
+
 // Stub for the real generation provider
 export class RealGenerationOutputProvider implements OutputProvider {
   name = "RealGenerationOutputProvider";
 
-  async generate(_testCase: TestCase): Promise<AIQuestionOutput> {
-    throw new Error("RealGenerationOutputProvider not yet implemented");
+  async generate(testCase: TestCase): Promise<AIQuestionOutput> {
+    let prompt = testCase.prompt;
+    if (testCase.variables) {
+      for (const [k, v] of Object.entries(testCase.variables)) {
+        prompt = prompt.replace(new RegExp(`{{${k}}}`, "g"), v);
+      }
+    }
+
+    const req = new Request("http://localhost/api/generate-fields", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        description: prompt,
+        existingFields: [],
+        existingQuestions: [],
+      }),
+    });
+
+    const res = await generateFields(req);
+    const data = await res.json();
+
+    if (data.error) {
+      throw new Error(data.error);
+    }
+
+    return {
+      newFields: data.newFields,
+      questions: data.questions,
+      deletedQuestionIds: data.deletedQuestionIds,
+    };
   }
 }
 
