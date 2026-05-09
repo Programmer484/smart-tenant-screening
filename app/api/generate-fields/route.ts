@@ -51,7 +51,7 @@ function repairJson(raw: string): string {
 
 const VALID_OUTCOMES: BranchOutcome[] = ["continue", "followups", "review", "reject"];
 
-function buildSystemPrompt(
+export function buildSystemPrompt(
   existingFields: { id: string; label: string; value_kind: string }[],
   existingQuestions: { id: string; text: string; fieldIds: string[] }[],
   maxFieldsPerQuestion: number,

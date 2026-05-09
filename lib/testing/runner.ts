@@ -24,7 +24,7 @@ export class MockOutputProvider implements OutputProvider {
   }
 }
 
-import { POST as generateFields } from "@/app/api/generate-fields/route";
+import { POST as generateFields, buildSystemPrompt } from "@/app/api/generate-fields/route";
 
 // Stub for the real generation provider
 export class RealGenerationOutputProvider implements OutputProvider {
@@ -59,6 +59,10 @@ export class RealGenerationOutputProvider implements OutputProvider {
       newFields: data.newFields,
       questions: data.questions,
       deletedQuestionIds: data.deletedQuestionIds,
+      prompts: {
+        system: buildSystemPrompt([], [], 3, 0),
+        user: prompt,
+      },
     };
   }
 }
