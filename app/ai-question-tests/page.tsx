@@ -446,6 +446,33 @@ export default function AiQuestionTestsPage() {
                           )}
                         </section>
                       )}
+
+                      {r.output?.prompts && (
+                        <section>
+                          <h4 className="text-sm font-semibold uppercase tracking-wider text-gray-500 mb-2">Prompts Used</h4>
+                          <details className="bg-gray-50 p-4 rounded-lg text-sm border border-gray-200">
+                            <summary className="font-semibold text-gray-700 cursor-pointer">View Actual Prompts</summary>
+                            <div className="mt-4 space-y-4">
+                              {r.output.prompts.system && (
+                                <div>
+                                  <span className="font-semibold text-gray-700 block mb-1">System Prompt:</span>
+                                  <pre className="p-3 bg-white border rounded text-gray-800 font-mono text-xs whitespace-pre-wrap overflow-x-auto">
+                                    {r.output.prompts.system}
+                                  </pre>
+                                </div>
+                              )}
+                              {r.output.prompts.user && (
+                                <div>
+                                  <span className="font-semibold text-gray-700 block mb-1">User Prompt:</span>
+                                  <pre className="p-3 bg-white border rounded text-gray-800 font-mono text-xs whitespace-pre-wrap overflow-x-auto">
+                                    {r.output.prompts.user}
+                                  </pre>
+                                </div>
+                              )}
+                            </div>
+                          </details>
+                        </section>
+                      )}
                     </div>
 
                     <div className="sticky top-6">

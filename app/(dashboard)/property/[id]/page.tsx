@@ -360,7 +360,7 @@ export default function PropertySetupPage() {
     try {
       const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
       const form = new FormData();
-      form.append("audio", blob, "recording.webm");
+      form.append("file", blob, "recording.webm");
       const res = await fetch("/api/transcribe", { method: "POST", body: form });
       if (!res.ok) throw new Error("Transcription failed");
       const { text } = await res.json() as { text: string };

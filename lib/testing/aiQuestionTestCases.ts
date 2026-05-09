@@ -12,6 +12,11 @@ export type AIQuestionOutput = {
   newRules?: LandlordRule[];
   modifiedRules?: LandlordRule[];
   deletedRuleIds?: string[];
+  
+  prompts?: {
+    system?: string;
+    user?: string;
+  };
 };
 
 export type TestCase = {
