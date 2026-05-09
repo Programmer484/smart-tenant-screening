@@ -1,5 +1,38 @@
 import type { LandlordField } from "./landlord-field";
 import type { LandlordRule } from "./landlord-rule";
+import type { PropertyVariable } from "./property";
+
+// Matches: {{key}}  or  {{key}} +/- N
+const EXPR_RE = /^\{\{([a-z][a-z0-9_]*)\}\}(?:\s*([+-])\s*(\d+))?$/;
+
+/**
+ * Resolves a condition value that may be a variable expression.
+ * Returns the original string if it isn't an expression or the variable is unknown.
+ */
+export function resolveExpression(
+  expr: string,
+  variables: PropertyVariable[],
+  value_kind: LandlordField["value_kind"],
+): string {
+  const m = expr.trim().match(EXPR_RE);
+  if (!m) return expr;
+  const [, key, op, offsetStr] = m;
+  const variable = variables.find((v) => v.key === key);
+  if (!variable) return expr;
+  if (!op) return variable.value;
+  const offset = parseInt(offsetStr, 10);
+  if (value_kind === "date") {
+    const ts = Date.parse(variable.value);
+    if (isNaN(ts)) return variable.value;
+    return new Date(ts + (op === "+" ? 1 : -1) * offset * 86_400_000).toISOString().slice(0, 10);
+  }
+  if (value_kind === "number") {
+    const num = Number(variable.value);
+    if (isNaN(num)) return variable.value;
+    return String(op === "+" ? num + offset : num - offset);
+  }
+  return variable.value;
+}
 
 /** Evaluates a single rule. Returns true if the applicant PASSES. */
 function satisfies(
@@ -63,7 +96,8 @@ export type RuleViolation = {
 export function evaluateRule(
   rule: LandlordRule,
   fields: LandlordField[],
-  answers: Record<string, string>
+  answers: Record<string, string>,
+  variables: PropertyVariable[] = [],
 ): boolean | null {
   if (!rule.conditions || rule.conditions.length === 0) return false;
 
@@ -82,8 +116,12 @@ export function evaluateRule(
       continue;
     }
 
-    if (!satisfies(actual, cond.operator, cond.value, field.value_kind)) {
-      return false; // one false makes the AND block false
+    const resolvedValue = variables.length
+      ? resolveExpression(cond.value, variables, field.value_kind)
+      : cond.value;
+
+    if (!satisfies(actual, cond.operator, resolvedValue, field.value_kind)) {
+      return false;
     }
   }
 
@@ -99,12 +137,13 @@ export function evaluateRules(
   rules: LandlordRule[],
   fields: LandlordField[],
   answers: Record<string, string>,
+  variables: PropertyVariable[] = [],
 ): RuleViolation[] {
   const violations: RuleViolation[] = [];
 
   for (const rule of rules) {
     if (rule.kind !== "reject") continue;
-    const isMet = evaluateRule(rule, fields, answers);
+    const isMet = evaluateRule(rule, fields, answers, variables);
     if (isMet === true) {
       violations.push({ rule });
     }
@@ -115,10 +154,10 @@ export function evaluateRules(
     let someMet = false;
     let someUnknown = false;
     for (const rule of requireRules) {
-      const isMet = evaluateRule(rule, fields, answers);
+      const isMet = evaluateRule(rule, fields, answers, variables);
       if (isMet === true) {
         someMet = true;
-        break; 
+        break;
       } else if (isMet === null) {
         someUnknown = true;
       }
@@ -164,12 +203,16 @@ export function evalBranchCondition(
   condition: { fieldId: string; operator: string; value: string },
   fields: LandlordField[],
   answers: Record<string, string>,
+  variables: PropertyVariable[] = [],
 ): boolean {
   const actual = answers[condition.fieldId];
   if (actual === undefined) return false;
   const field = fields.find((f) => f.id === condition.fieldId);
   if (!field) return false;
-  return satisfies(actual, condition.operator, condition.value, field.value_kind);
+  const resolvedValue = variables.length
+    ? resolveExpression(condition.value, variables, field.value_kind)
+    : condition.value;
+  return satisfies(actual, condition.operator, resolvedValue, field.value_kind);
 }
 
 /** Human-readable description of a rule, e.g. "Monthly income is at most 3000 AND Credit is less than 600" */

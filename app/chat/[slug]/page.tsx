@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { ConfirmDialog } from "@/app/components/ConfirmDialog";
-import type { PropertyRecord, PropertyLinks, AiInstructions } from "@/lib/property";
+import type { PropertyRecord, PropertyLinks, AiInstructions, PropertyVariable } from "@/lib/property";
 import { resolveAiInstructions, DEFAULT_LINKS } from "@/lib/property";
 import type { LandlordField } from "@/lib/landlord-field";
 import { normalizeRulesList, type LandlordRule } from "@/lib/landlord-rule";
@@ -24,6 +24,7 @@ type ChatConfig = {
   rules: LandlordRule[];
   links: PropertyLinks;
   aiInstructions: AiInstructions;
+  variables: PropertyVariable[];
 };
 
 function generateId() {
@@ -107,28 +108,38 @@ export default function ChatPage() {
     document.cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${maxAge}; Path=/; SameSite=Lax`;
   }
 
+  function buildChatPayload(
+    cfg: ChatConfig,
+    currentAnswers: Record<string, string>,
+    apiMessages: ApiMessage[],
+    sid: string,
+  ) {
+    return {
+      title: cfg.title,
+      description: cfg.description,
+      fields: cfg.fields,
+      questions: cfg.questions,
+      rules: cfg.rules,
+      links: cfg.links,
+      aiInstructions: cfg.aiInstructions,
+      variables: cfg.variables,
+      answers: currentAnswers,
+      messages: apiMessages,
+      sessionId: sid,
+      propertyId: cfg.id,
+    };
+  }
+
   async function fetchGreeting(cfg: ChatConfig, sid: string, initialAnswers: Record<string, string>) {
     try {
-      const prompt = tenantName 
+      const prompt = tenantName
         ? `(new conversation — the applicant's name is ${tenantName}. greet them by name and ask the next screening question)`
         : `(new conversation — very concisely introduce yourself and ask the first screening question)`;
-      
+
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: cfg.title,
-          description: cfg.description,
-          fields: cfg.fields,
-          questions: cfg.questions,
-          rules: cfg.rules,
-          links: cfg.links,
-          aiInstructions: cfg.aiInstructions,
-          answers: initialAnswers,
-          messages: [{ role: "user", content: prompt }],
-          sessionId: sid,
-          propertyId: cfg.id,
-        }),
+        body: JSON.stringify(buildChatPayload(cfg, initialAnswers, [{ role: "user", content: prompt }], sid)),
       });
       if (res.ok) {
         const data = (await res.json()) as { reply?: string; extracted?: Extraction[]; sessionStatus?: string };
@@ -169,6 +180,7 @@ export default function ChatPage() {
         rules: normalizeRulesList(p.rules),
         links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) },
         aiInstructions: resolveAiInstructions(p.ai_instructions),
+        variables: (p.variables as PropertyVariable[]) ?? [],
       };
       setConfig(cfg);
 
@@ -261,19 +273,7 @@ export default function ChatPage() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: config.title,
-          description: config.description,
-          fields: config.fields,
-          questions: config.questions,
-          rules: config.rules,
-          links: config.links,
-          aiInstructions: config.aiInstructions,
-          answers,
-          messages: apiHistory,
-          sessionId,
-          propertyId: config.id,
-        }),
+        body: JSON.stringify(buildChatPayload(config, answers, apiHistory, sessionId)),
       });
 
       if (!res.ok) {

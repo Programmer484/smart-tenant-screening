@@ -38,13 +38,17 @@ export async function POST(req: Request) {
 }
 
 export async function GET() {
-  // Return the list of available tests
   const tests = testCases.map(t => ({
     id: t.id,
     name: t.name,
     description: t.description,
     prompt: t.prompt,
+    variables: t.variables,
+    propertyVariables: t.propertyVariables,
+    existingFields: t.existingFields,
+    existingQuestions: t.existingQuestions,
     requirements: t.requirements,
+    mockOutput: t.mockOutput,
   }));
   return NextResponse.json({ tests });
 }

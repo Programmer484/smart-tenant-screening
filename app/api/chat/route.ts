@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import type { LandlordField, FieldValueKind } from "@/lib/landlord-field";
 import { normalizeRulesList, type LandlordRule } from "@/lib/landlord-rule";
 import type { Question } from "@/lib/question";
-import type { AiInstructions, PropertyLinks } from "@/lib/property";
+import type { AiInstructions, PropertyLinks, PropertyVariable } from "@/lib/property";
 import { resolveAiInstructions, DEFAULT_LINKS } from "@/lib/property";
 import { createServiceClient } from "@/lib/supabase/service";
 import { evaluateRules, evalBranchCondition, describeViolation } from "@/lib/rule-engine";
@@ -102,6 +102,7 @@ function walkTree(
   qs: Question[],
   fields: LandlordField[],
   answers: Record<string, string>,
+  variables: PropertyVariable[] = [],
 ): WalkResult {
   const sorted = [...qs].sort((a, b) => a.sort_order - b.sort_order);
 
@@ -114,7 +115,7 @@ function walkTree(
 
     // Question answered — find the first branch whose condition matches
     const matchingBranch = q.branches.find((b) =>
-      evalBranchCondition(b.condition, fields, answers),
+      evalBranchCondition(b.condition, fields, answers, variables),
     );
     const outcome = matchingBranch?.outcome ?? "continue";
 
@@ -122,15 +123,12 @@ function walkTree(
     if (outcome === "review") return { nextQuestion: null, branchOutcome: "review" };
 
     if (outcome === "followups" && matchingBranch?.subQuestions.length) {
-      const sub = walkTree(matchingBranch.subQuestions, fields, answers);
-      // Bubble up any pending question or terminal outcome from the sub-tree
+      const sub = walkTree(matchingBranch.subQuestions, fields, answers, variables);
       if (sub.nextQuestion || sub.branchOutcome) return sub;
-      // Sub-tree complete — fall through to the next sibling question
     }
-    // "continue" or no matching branch: proceed to next question in this level
   }
 
-  return { nextQuestion: null, branchOutcome: null }; // interview complete
+  return { nextQuestion: null, branchOutcome: null };
 }
 
 // ─── System prompt ────────────────────────────────────────────────────────────
@@ -143,8 +141,9 @@ function buildSystemPrompt(
   rules: LandlordRule[],
   answers: Record<string, string>,
   ai: AiInstructions,
+  variables: PropertyVariable[] = [],
 ): string {
-  const { nextQuestion } = walkTree(questions, fields, answers);
+  const { nextQuestion } = walkTree(questions, fields, answers, variables);
 
   // Field schema block
   const fieldSchemaBlock = fields.length > 0
@@ -300,6 +299,7 @@ export async function POST(req: Request) {
   const sessionId   = typeof rec.sessionId === "string" ? rec.sessionId : null;
   const propertyId  = typeof rec.propertyId === "string" ? rec.propertyId : null;
   const ai          = resolveAiInstructions(rec.aiInstructions as Partial<AiInstructions> | undefined);
+  const variables   = Array.isArray(rec.variables) ? (rec.variables as PropertyVariable[]) : [];
 
   // ── Load server-authoritative session state ──
 
@@ -329,7 +329,7 @@ export async function POST(req: Request) {
 
   // ── PHASE 1: Extract fields ──
 
-  const extractSystem = buildSystemPrompt(title, description, fields, questions, rules, answers, ai);
+  const extractSystem = buildSystemPrompt(title, description, fields, questions, rules, answers, ai, variables);
 
   let extractData;
   try {
@@ -372,10 +372,10 @@ export async function POST(req: Request) {
     mergedAnswers[fieldId] = value;
   }
 
-  const violations    = evaluateRules(rules, fields, mergedAnswers);
+  const violations    = evaluateRules(rules, fields, mergedAnswers, variables);
   const firstViolation = violations[0] ?? null;
 
-  const { nextQuestion, branchOutcome } = walkTree(questions, fields, mergedAnswers);
+  const { nextQuestion, branchOutcome } = walkTree(questions, fields, mergedAnswers, variables);
   const interviewDone = !nextQuestion && branchOutcome === null;
 
   // ── Update counters ──
@@ -445,7 +445,7 @@ export async function POST(req: Request) {
 
   // ── PHASE 2: Generate response ──
 
-  const respondSystem = buildSystemPrompt(title, description, fields, questions, rules, mergedAnswers, ai) + responseContext;
+  const respondSystem = buildSystemPrompt(title, description, fields, questions, rules, mergedAnswers, ai, variables) + responseContext;
 
   let respondData;
   try {

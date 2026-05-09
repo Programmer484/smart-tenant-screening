@@ -226,7 +226,7 @@ export default function PropertySetupPage() {
           setTitle(newTitle);
         }
         setSlug(newSlug);
-        lastSavedRef.current = JSON.stringify({ title: newTitle, description, fields, questions, rules, links, aiInstructions });
+        lastSavedRef.current = JSON.stringify({ title: newTitle, description, fields, questions, variables, rules, links, aiInstructions });
         setDirty(false);
         if (savedIndicatorTimerRef.current) clearTimeout(savedIndicatorTimerRef.current);
         setShowSaved(true);
@@ -316,7 +316,7 @@ export default function PropertySetupPage() {
             updated_at: new Date().toISOString(),
           })
           .eq("id", id)
-          .then(({ error }) => { if (error) console.error("[unmount-save]", error); });
+          .then(({ error }) => { if (error) console.error("[unmount-save]", error.message ?? error); });
       } catch { /* serialization error — skip */ }
     };
   }, [id, supabase]); // eslint-disable-line react-hooks/exhaustive-deps

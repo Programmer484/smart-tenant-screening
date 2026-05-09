@@ -1,12 +1,13 @@
 import type { LandlordField } from "@/lib/landlord-field";
 import type { Question } from "@/lib/question";
 import type { LandlordRule } from "@/lib/landlord-rule";
+import type { PropertyVariable } from "@/lib/property";
 
 export type AIQuestionOutput = {
   newFields?: LandlordField[];
   questions?: Question[];
   deletedQuestionIds?: string[];
-  
+
   // Rule generation fields (optional, if we want to support both)
   newRules?: LandlordRule[];
   modifiedRules?: LandlordRule[];
@@ -18,7 +19,12 @@ export type TestCase = {
   name: string;
   description: string;
   prompt: string;
+  /** Simple key→value substitution applied to the prompt text before sending to the AI */
   variables?: Record<string, string>;
+  /** Full PropertyVariable objects passed to the generator so the AI can use {{key}} expressions in conditions */
+  propertyVariables?: PropertyVariable[];
+  existingFields?: Pick<LandlordField, "id" | "label" | "value_kind">[];
+  existingQuestions?: { id: string; text: string; fieldIds: string[] }[];
   requirements: string[];
   mockOutput: AIQuestionOutput;
 };
@@ -138,6 +144,12 @@ export const testCases: TestCase[] = [
     name: "Modify Existing Question - Smoking",
     description: "Modifies an existing question to ask for more details",
     prompt: "Change the smoking question to also ask if they smoke indoors or outdoors.",
+    existingFields: [
+      { id: "smokes", label: "Do you smoke?", value_kind: "boolean" },
+    ],
+    existingQuestions: [
+      { id: "q_smoking", text: "Do you smoke?", fieldIds: ["smokes"] },
+    ],
     requirements: [
       "Must add a field for smoking location (indoors/outdoors)",
       "Must update the existing smoking question (q_smoking) to include the new field",
@@ -165,40 +177,26 @@ export const testCases: TestCase[] = [
     },
   },
   {
-    id: "move_in_grace_period",
-    name: "Move-in Date with Grace Period and Negotiation",
-    description: "Tests conditional branches around a target move-in date with grace periods.",
-    prompt: "The unit is available on {{availability_date}}. If they want to move in before the availability date, ask if they can wait. If they want to move in after but within {{grace_period_days}} days, that's fine. If it's more than {{grace_period_days}} days after, ask if they can move in sooner.",
-    variables: {
-      availability_date: "2024-09-01",
-      grace_period_days: "15",
-      max_acceptable_date: "2024-09-15" // Just for reference
-    },
+    id: "availability_window",
+    name: "Move-in Date Availability Window (±30 days, expression-based)",
+    description: "Tests that the AI uses variable expressions ({{availability_date}} ± 30) instead of hardcoded dates for the move-in window branches.",
+    prompt: "The unit is available on {{availability_date}}. We're flexible — applicants can move in up to 30 days before or after that date. If they want to move in more than 30 days before, ask if they can wait. If more than 30 days after, ask if they can move in sooner.",
+    propertyVariables: [
+      { id: "v_avail", key: "availability_date", label: "Availability Date", value: "2024-09-01", value_kind: "date" },
+    ],
     requirements: [
       "Must collect a date field for desired_move_in_date",
-      "Must have a condition branching on desired_move_in_date < 2024-09-01",
-      "The 'before Sept 1' branch must ask a follow-up question seeing if they can wait",
-      "Must have a condition branching on desired_move_in_date > 2024-09-15",
-      "The 'after Sept 15' branch must ask a follow-up question seeing if they can move in sooner",
-      "Must NOT have any rejection or follow-up branches for dates between Sept 1st and Sept 15th"
+      "Must have a 'too early' branch using the expression {{availability_date}} - 30 (not a hardcoded date)",
+      "The 'too early' branch must ask a follow-up question to see if the applicant can wait",
+      "Must have a 'too late' branch using the expression {{availability_date}} + 30 (not a hardcoded date)",
+      "The 'too late' branch must ask a follow-up question to see if the applicant can move in sooner",
+      "Must NOT add any branch or rejection for dates within the ±30-day window",
     ],
     mockOutput: {
       newFields: [
-        {
-          id: "desired_move_in_date",
-          label: "When would you like to move in?",
-          value_kind: "date",
-        },
-        {
-          id: "can_wait_until_available",
-          label: "Can you wait until the unit is available on Sept 1st?",
-          value_kind: "boolean",
-        },
-        {
-          id: "can_move_sooner",
-          label: "Can you move in sooner (by Sept 15th)?",
-          value_kind: "boolean",
-        }
+        { id: "desired_move_in_date", label: "Desired Move-in Date", value_kind: "date" },
+        { id: "can_wait_until_window", label: "Can you wait until closer to the availability date?", value_kind: "boolean" },
+        { id: "can_move_sooner", label: "Can you move in sooner?", value_kind: "boolean" },
       ],
       questions: [
         {
@@ -209,45 +207,37 @@ export const testCases: TestCase[] = [
           branches: [
             {
               id: "b_too_early",
-              condition: {
-                fieldId: "desired_move_in_date",
-                operator: "<",
-                value: "2024-09-01"
-              },
+              condition: { fieldId: "desired_move_in_date", operator: "<", value: "{{availability_date}} - 30" },
               outcome: "followups",
               subQuestions: [
                 {
                   id: "q_can_wait",
-                  text: "The unit is not available until September 1st. Are you able to wait until then?",
-                  fieldIds: ["can_wait_until_available"],
+                  text: "That date is more than 30 days before the unit is available. Would you be able to wait until closer to {{availability_date}}?",
+                  fieldIds: ["can_wait_until_window"],
                   sort_order: 0,
-                  branches: []
-                }
-              ]
+                  branches: [],
+                },
+              ],
             },
             {
               id: "b_too_late",
-              condition: {
-                fieldId: "desired_move_in_date",
-                operator: ">",
-                value: "2024-09-15"
-              },
+              condition: { fieldId: "desired_move_in_date", operator: ">", value: "{{availability_date}} + 30" },
               outcome: "followups",
               subQuestions: [
                 {
                   id: "q_can_move_sooner",
-                  text: "That date is a bit far out. Would you be able to move in by September 15th?",
+                  text: "That date is more than 30 days after the unit becomes available. Would you be able to move in sooner?",
                   fieldIds: ["can_move_sooner"],
                   sort_order: 0,
-                  branches: []
-                }
-              ]
-            }
-          ]
-        }
+                  branches: [],
+                },
+              ],
+            },
+          ],
+        },
       ],
-      deletedQuestionIds: []
-    }
+      deletedQuestionIds: [],
+    },
   },
   {
     id: "multi_occupant_flat_schema",

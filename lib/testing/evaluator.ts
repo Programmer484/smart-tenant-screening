@@ -17,8 +17,9 @@ Your job is to strictly evaluate the output of the generation system against a s
 You will be given:
 1. Test Case Name
 2. Description & Prompt (context for what was asked)
-3. Requirements (the strict criteria the output MUST meet)
-4. Generated Output (JSON object containing proposed fields, questions, rules, etc.)
+3. Existing Fields & Questions (the pre-existing schema before generation — may be empty)
+4. Requirements (the strict criteria the output MUST meet)
+5. Generated Output (JSON object containing proposed fields, questions, rules, etc.)
 
 Instructions:
 - Carefully evaluate the Generated Output against EACH Requirement.
@@ -27,6 +28,14 @@ Instructions:
 - Evaluate whether the output satisfies the core intent and all requirements.
 - Calculate a score from 0 to 100. 100 means all requirements met perfectly. 0 means none met.
 
+Do NOT raise concerns about:
+- A field being re-declared in newFields that already appears in the existing schema. The generator receives existing context and should avoid redeclaring, but this is not a requirement failure.
+- Value type formatting differences (e.g. "true" vs true, "3000" vs 3000) — as long as the value is semantically correct for the condition, treat it as passing.
+
+DO raise concerns about:
+- Genuine redundancy: e.g. asking the same information twice (in a top-level question text AND again in a sub-question), or duplicate fields capturing the same data under different names.
+- Structural issues that would break the interview flow.
+
 Return your evaluation ONLY as a valid JSON object matching this schema. Do not include markdown formatting or explanations outside the JSON.
 {
   "pass": boolean, // true if ALL requirements are passed, false otherwise
@@ -34,7 +43,7 @@ Return your evaluation ONLY as a valid JSON object matching this schema. Do not 
   "summary": string, // short overall explanation
   "passedRequirements": string[], // list of requirements that passed
   "failedRequirements": string[], // list of requirements that failed
-  "concerns": string[], // any general concerns, even if technically passed
+  "concerns": string[], // genuine concerns (redundancy, structural issues) — not formatting or redeclaration
   "suggestedFixes": string[] // what the generator should have done instead
 }`;
 
@@ -43,16 +52,20 @@ export async function evaluateOutput(
   testCase: TestCase,
   output: AIQuestionOutput
 ): Promise<EvaluationResult> {
-  const variablesBlock = testCase.variables 
-    ? `\nVariables Context:\n${Object.entries(testCase.variables).map(([k, v]) => `- {{${k}}}: ${v}`).join("\n")}\n` 
+  const variablesBlock = testCase.variables
+    ? `\nVariables Context:\n${Object.entries(testCase.variables).map(([k, v]) => `- {{${k}}}: ${v}`).join("\n")}\n`
     : "";
+
+  const existingBlock = (testCase.existingFields?.length || testCase.existingQuestions?.length)
+    ? `\nExisting Schema (pre-generation state):\nFields: ${JSON.stringify(testCase.existingFields ?? [])}\nQuestions: ${JSON.stringify(testCase.existingQuestions ?? [])}\n`
+    : "\nExisting Schema: (none — generating from scratch)\n";
 
   const userPrompt = `Test Case Name: ${testCase.name}
 
 Description: ${testCase.description}
 
 Prompt (User Intent): ${testCase.prompt}
-${variablesBlock}
+${variablesBlock}${existingBlock}
 Requirements:
 ${testCase.requirements.map(r => `- ${r}`).join("\n")}
 

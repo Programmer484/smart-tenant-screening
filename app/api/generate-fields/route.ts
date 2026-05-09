@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import {
   LandlordField,
-  FieldValueKind,
   FIELD_VALUE_KINDS,
   validateLandlordFieldId,
   validateLandlordFieldLabel,
@@ -9,6 +8,7 @@ import {
   validateEnumOptions,
 } from "@/lib/landlord-field";
 import type { Branch, BranchOutcome, Question } from "@/lib/question";
+import type { PropertyVariable } from "@/lib/property";
 import { callClaude, ClaudeApiError, extractText, stripCodeFences } from "@/lib/anthropic";
 const DEFAULT_MAX_FIELDS_PER_QUESTION = 3;
 
@@ -56,6 +56,7 @@ function buildSystemPrompt(
   existingQuestions: { id: string; text: string; fieldIds: string[] }[],
   maxFieldsPerQuestion: number,
   generationAttempt: 0 | 1,
+  variables: PropertyVariable[] = [],
 ): string {
   let prompt = `You are a rental application assistant. Given a landlord's prompt, generate the data FIELDS needed and the interview QUESTIONS to collect them.
 
@@ -120,6 +121,16 @@ If no changes are needed, return {"newFields":[],"questions":[],"deletedQuestion
     prompt += `
 
 GENERATION ATTEMPT: 2 (retry). A previous pass referenced field IDs that were not in the schema; missing definitions were added to EXISTING FIELDS. Regenerate a complete, consistent proposal. Every "fieldIds" entry must match EXISTING FIELDS or "newFields".`;
+  }
+
+  if (variables.length > 0) {
+    prompt += `\n\nPROPERTY VARIABLES (landlord-defined values you may reference in branch condition "value" fields):`;
+    prompt += `\n${variables.map((v) => `  - {{${v.key}}} — ${v.label} (${v.value_kind ?? "text"}) = "${v.value}"`).join("\n")}`;
+    prompt += `\n\nEXPRESSION SYNTAX (date and number fields only — use instead of hardcoding values):
+  {{key}}        → the variable's current value
+  {{key}} + N   → value plus N (days for dates, numeric offset for numbers)
+  {{key}} - N   → value minus N (days for dates, numeric offset for numbers)
+Example: { "fieldId": "move_in_date", "operator": "<", "value": "{{availability_date}} - 30" }`;
   }
 
   if (existingFields.length > 0) {
@@ -420,6 +431,15 @@ export async function POST(req: Request) {
       )
     : [];
 
+  const variables: PropertyVariable[] = Array.isArray(rec.variables)
+    ? (rec.variables as unknown[]).filter(
+        (x): x is PropertyVariable =>
+          typeof x === "object" && x !== null &&
+          typeof (x as any).key === "string" &&
+          typeof (x as any).value === "string"
+      )
+    : [];
+
   try {
     log("prompt (user)", description);
     log("existingFields", existingFields.length);
@@ -431,6 +451,7 @@ export async function POST(req: Request) {
       existingQuestions,
       maxFieldsPerQuestion,
       0,
+      variables,
     );
 
     const response0 = await callClaude(key, {
@@ -496,6 +517,7 @@ export async function POST(req: Request) {
         existingQuestions,
         maxFieldsPerQuestion,
         1,
+        variables,
       );
 
       const response1 = await callClaude(key, {
