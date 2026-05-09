@@ -6,7 +6,7 @@ import type { FieldValueKind, LandlordField } from "./landlord-field";
  */
 export const OPERATORS_BY_KIND: Record<FieldValueKind, readonly string[]> = {
   number: ["==", "!=", ">", ">=", "<", "<="],
-  boolean: ["=="],
+  boolean: ["==", "!="],
   text: ["==", "!="],
   date: ["==", "!=", ">", ">=", "<", "<="],
   enum: ["==", "!="],

@@ -2,8 +2,8 @@ import type { LandlordField } from "./landlord-field";
 import type { LandlordRule } from "./landlord-rule";
 import type { PropertyVariable } from "./property";
 
-// Matches: {{key}}  or  {{key}} +/- N
-const EXPR_RE = /^\{\{([a-z][a-z0-9_]*)\}\}(?:\s*([+-])\s*(\d+))?$/;
+// Matches: {{key}}  or  {{key}} +/- N  or  {{key}} +/- {{key2}}
+const EXPR_RE = /^\{\{([a-z][a-z0-9_]*)\}\}(?:\s*([+-])\s*(?:(\d+)|\{\{([a-z][a-z0-9_]*)\}\}))?$/;
 
 /**
  * Resolves a condition value that may be a variable expression.
@@ -16,20 +16,28 @@ export function resolveExpression(
 ): string {
   const m = expr.trim().match(EXPR_RE);
   if (!m) return expr;
-  const [, key, op, offsetStr] = m;
+  const [, key, op, offsetStr, offsetKey] = m;
   const variable = variables.find((v) => v.key === key);
   if (!variable) return expr;
   if (!op) return variable.value;
-  const offset = parseInt(offsetStr, 10);
+  let offsetNum: number;
+  if (offsetKey !== undefined) {
+    const offsetVar = variables.find((v) => v.key === offsetKey);
+    if (!offsetVar) return variable.value;
+    offsetNum = parseInt(offsetVar.value, 10);
+    if (isNaN(offsetNum)) return variable.value;
+  } else {
+    offsetNum = parseInt(offsetStr, 10);
+  }
   if (value_kind === "date") {
     const ts = Date.parse(variable.value);
     if (isNaN(ts)) return variable.value;
-    return new Date(ts + (op === "+" ? 1 : -1) * offset * 86_400_000).toISOString().slice(0, 10);
+    return new Date(ts + (op === "+" ? 1 : -1) * offsetNum * 86_400_000).toISOString().slice(0, 10);
   }
   if (value_kind === "number") {
     const num = Number(variable.value);
     if (isNaN(num)) return variable.value;
-    return String(op === "+" ? num + offset : num - offset);
+    return String(op === "+" ? num + offsetNum : num - offsetNum);
   }
   return variable.value;
 }
@@ -70,7 +78,8 @@ function satisfies(
   }
 
   if (value_kind === "boolean") {
-    return actual.toLowerCase() === target.toLowerCase();
+    const match = actual.toLowerCase() === target.toLowerCase();
+    return operator === "!=" ? !match : match;
   }
 
   // text / enum — case-insensitive

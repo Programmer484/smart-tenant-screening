@@ -77,6 +77,23 @@ QUESTION RULES:
 - When UPDATING an existing question, return its FULL fieldIds list (existing + new). When ADDING a new question, use a new id starting with "q_".
 - If a question is being REPLACED or MERGED into another, include the old question's id in "deletedQuestionIds".
 
+FLAT SCHEMA — COLLECTIONS AND RELATIONSHIPS:
+This system stores only scalar (single-value) fields — no arrays, lists, or nested objects. Apply these rules whenever a prompt implies a list of people, pets, references, or other repeating entities:
+
+1. NUMBERED FLAT FIELDS: Represent N items as N separate numbered fields.
+   Good: occupant_2_name, occupant_2_relationship, occupant_3_name, occupant_3_relationship
+   Bad:  occupants (array or object)
+
+2. OCCUPANT 1 IS ALWAYS THE APPLICANT: The person filling out the form is occupant 1. Never create fields for occupant 1. Start additional occupants at occupant_2.
+
+3. INFER THE MAX COUNT: If the prompt states or implies a maximum (e.g. "up to 3 people", "2 adults"), create exactly that many numbered slots. If no max is given, default to a sensible cap (typically 3).
+
+4. RELATIONSHIP FIELDS: Use enum type for relationship fields. Always include options that cover family roles (spouse/partner, child, sibling, parent) plus friend and other. Name the field after the entity: occupant_2_relationship means "applicant's relationship to occupant 2".
+
+5. GROUP BY ENTITY: Link all fields about the same entity to the same question when practical (e.g. occupant_2_name and occupant_2_relationship together).
+
+6. INFER, DON'T ASK TWICE: If a required fact can be inferred from an existing field's value (e.g. child presence from a relationship field value of "Child"), do NOT add a redundant boolean to ask for it again. Branch directly on the relationship field value instead.
+
 BRANCHES:
 - Each question may have a "branches" array. Add branches ONLY when a specific answer meaningfully changes what happens next.
 - Each branch: { "condition": { "fieldId": "...", "operator": "...", "value": "..." }, "outcome": "...", "subQuestions": [...] }
@@ -87,7 +104,7 @@ BRANCHES:
     "reject"    — immediately reject applicant (clear policy violation)
 - subQuestions applies only to "followups". Sub-questions follow the same structure as top-level questions.
 - Most questions need NO branches. Keep branches array empty ([]) unless the answer truly changes routing.
-- Valid operators by field type: number/date: ==,!=,>,>=,<,<=  boolean: ==  text/enum: ==,!=
+- Valid operators by field type: number/date: ==,!=,>,>=,<,<=  boolean: ==,!=  text/enum: ==,!=
 
 Return ONLY a valid JSON object — no explanation, no code fences:
 {

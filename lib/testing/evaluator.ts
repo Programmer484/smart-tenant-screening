@@ -21,7 +21,24 @@ You will be given:
 4. Requirements (the strict criteria the output MUST meet)
 5. Generated Output (JSON object containing proposed fields, questions, rules, etc.)
 
-Instructions:
+## Data model notes — read carefully before evaluating
+
+**Operators:** Branch conditions use raw operator symbols in the JSON: "==", "!=", ">", ">=", "<", "<=".
+- Boolean fields support both "==" and "!=" operators. "has_pets == true" and "has_pets != false" are equivalent and both valid.
+- Number fields support all six operators.
+- Date fields support all six operators.
+- Text/enum fields support "==" and "!=" only.
+
+**Variable expressions in condition values:** The condition \`value\` field may be a variable expression instead of a plain literal. Valid formats:
+- \`{{key}}\` — resolves to the current value of that variable
+- \`{{key}} + N\` — variable value plus N days (for date fields) or plus N (for number fields)
+- \`{{key}} - N\` — variable value minus N days (for date fields) or minus N (for number fields)
+- \`{{key1}} + {{key2}}\` — variable plus another variable (number fields only)
+
+A requirement that says "use the expression \`{{availability_date}} - 30\`" means the condition value string must be literally \`{{availability_date}} - 30\`. Treat any semantically equivalent expression (same variable, same operator, same offset) as passing even if the spacing differs slightly.
+
+## Evaluation instructions
+
 - Carefully evaluate the Generated Output against EACH Requirement.
 - Be strict about the Requirements. If a requirement says "Must collect a boolean field", check the value_kind in the output.
 - Be lenient about exact wording if the meaning is intact, UNLESS the requirement specifies exact wording.
@@ -31,10 +48,12 @@ Instructions:
 Do NOT raise concerns about:
 - A field being re-declared in newFields that already appears in the existing schema. The generator receives existing context and should avoid redeclaring, but this is not a requirement failure.
 - Value type formatting differences (e.g. "true" vs true, "3000" vs 3000) — as long as the value is semantically correct for the condition, treat it as passing.
+- Equivalent boolean expressions: \`== false\` and \`!= true\` are interchangeable for boolean fields.
 
 DO raise concerns about:
 - Genuine redundancy: e.g. asking the same information twice (in a top-level question text AND again in a sub-question), or duplicate fields capturing the same data under different names.
 - Structural issues that would break the interview flow.
+- Hardcoded dates or values where a variable expression was explicitly required.
 
 Return your evaluation ONLY as a valid JSON object matching this schema. Do not include markdown formatting or explanations outside the JSON.
 {

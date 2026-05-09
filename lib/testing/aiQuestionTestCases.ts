@@ -186,9 +186,9 @@ export const testCases: TestCase[] = [
     ],
     requirements: [
       "Must collect a date field for desired_move_in_date",
-      "Must have a 'too early' branch using the expression {{availability_date}} - 30 (not a hardcoded date)",
+      "Must have a 'too early' branch with operator < (less than / is before) and condition value {{availability_date}} - 30 — not a hardcoded date",
       "The 'too early' branch must ask a follow-up question to see if the applicant can wait",
-      "Must have a 'too late' branch using the expression {{availability_date}} + 30 (not a hardcoded date)",
+      "Must have a 'too late' branch with operator > (greater than / is after) and condition value {{availability_date}} + 30 — not a hardcoded date",
       "The 'too late' branch must ask a follow-up question to see if the applicant can move in sooner",
       "Must NOT add any branch or rejection for dates within the ±30-day window",
     ],
@@ -240,92 +240,156 @@ export const testCases: TestCase[] = [
     },
   },
   {
-    id: "multi_occupant_flat_schema",
-    name: "Conditional Family Rules and Multi-Occupant Flat Fields",
-    description: "Tests generation of flat fields for multiple occupants and conditional child age questions.",
-    prompt: "I only want to rent to families with a child who is between {{min_child_age}} and {{max_child_age}} years old. Don't ask about kids' ages unless they actually say they have a child. Also, I need to know the relationship between all the people moving in, and I need the name and job for up to {{max_occupants}} occupants.",
-    variables: {
-      min_child_age: "8",
-      max_child_age: "15",
-      max_occupants: "3"
-    },
+    id: "boolean_not_equals",
+    name: "Boolean != Operator — Missing Landlord Reference",
+    description: "Tests that the AI can branch on a boolean field being false using either == false or != true",
+    prompt: "Ask if they have a landlord reference. If they don't have one, ask why.",
     requirements: [
-      "Must collect a boolean field asking if the applicant has children",
-      "Must have a conditional branch that triggers ONLY if they have children",
-      "The child branch must collect a number field for the child's age",
-      "Must generate rejection branches to reject applicants who do not have children, or whose child is under 8, or whose child is over 15",
-      "Must generate separate, distinct text fields for the names and jobs of exactly 3 occupants (occupant_1_name, occupant_1_job, etc.)",
-      "Must ask a question collecting the relationship between the occupants",
-      "Must NOT use nested arrays or object data structures for occupants"
+      "Must collect a boolean field for whether they have a landlord reference",
+      "Must have a branch that triggers when that field is false — using either operator == with value false, or operator != with value true",
+      "The branch outcome must be followups (not reject)",
+      "The follow-up must ask the applicant to explain why they don't have a reference",
     ],
     mockOutput: {
       newFields: [
-        { id: "has_children", label: "Do you have any children?", value_kind: "boolean" },
-        { id: "child_age", label: "What is the child's age?", value_kind: "number" },
-        { id: "occupants_relationship", label: "What is the relationship between all occupants?", value_kind: "text" },
-        { id: "occupant_1_name", label: "Occupant 1 Name", value_kind: "text" },
-        { id: "occupant_1_job", label: "Occupant 1 Occupation", value_kind: "text" },
-        { id: "occupant_2_name", label: "Occupant 2 Name", value_kind: "text" },
-        { id: "occupant_2_job", label: "Occupant 2 Occupation", value_kind: "text" },
-        { id: "occupant_3_name", label: "Occupant 3 Name", value_kind: "text" },
-        { id: "occupant_3_job", label: "Occupant 3 Occupation", value_kind: "text" }
+        { id: "has_landlord_reference", label: "Do you have a landlord reference?", value_kind: "boolean" },
+        { id: "no_reference_reason", label: "Why don't you have a landlord reference?", value_kind: "text" },
       ],
       questions: [
         {
-          id: "q_children",
-          text: "Do you have any children moving in with you?",
-          fieldIds: ["has_children"],
+          id: "q_reference",
+          text: "Do you have a landlord reference available?",
+          fieldIds: ["has_landlord_reference"],
           sort_order: 0,
           branches: [
             {
-              id: "b_no_children",
-              condition: { fieldId: "has_children", operator: "==", value: "false" },
-              outcome: "reject",
-              subQuestions: []
-            },
-            {
-              id: "b_has_children",
-              condition: { fieldId: "has_children", operator: "==", value: "true" },
+              id: "b_no_reference",
+              condition: { fieldId: "has_landlord_reference", operator: "!=", value: "true" },
               outcome: "followups",
               subQuestions: [
                 {
-                  id: "q_child_age",
-                  text: "How old is your child?",
+                  id: "q_no_reference_reason",
+                  text: "Could you explain why you don't have a landlord reference?",
+                  fieldIds: ["no_reference_reason"],
+                  sort_order: 0,
+                  branches: [],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      deletedQuestionIds: [],
+    },
+  },
+  {
+    id: "multi_occupant_flat_schema",
+    name: "Occupant Relationships + Family-of-3 Child Age Check",
+    description: "Occupant 1 is always the applicant. Collect the number of occupants and each additional occupant's relationship to the applicant in one question. Up to 2 occupants are always accepted. 3 occupants only accepted if one has a child relationship aged 8–15; child presence is inferred from the relationship field, not asked directly.",
+    prompt: "I accept up to 2 people normally. If there are 3, it's only okay if one of the extra occupants is a child between 8 and 15 — otherwise reject. More than 3 is always rejected. Occupant 1 is always the person filling out the form, so I need the relationship of the form filler to occupant 2 and occupant 3. Collect the occupant count and both relationships in the same question before moving on. Do NOT ask a separate yes/no question about whether they have a child — infer it from the relationship field.",
+    requirements: [
+      "Occupant 1 is the applicant — must NOT create a relationship field for occupant 1",
+      "Must collect a number field for total occupant count (including the applicant)",
+      "Must collect occupant_2_relationship as an enum field — relationship of the applicant to the second person",
+      "Must collect occupant_3_relationship as an enum field — relationship of the applicant to the third person",
+      "The occupant count, occupant_2_relationship, and occupant_3_relationship must all be linked to the same question (same fieldIds array)",
+      "The relationship enum options must include 'Child' (or equivalent) as one of the options",
+      "Must reject if total occupants > 3",
+      "Must NOT reject or add any follow-ups when total occupants <= 2",
+      "When 3 occupants, must branch on occupant_2_relationship == 'Child' (or equivalent) with outcome followups, leading to a child age question",
+      "When 3 occupants, must branch on occupant_3_relationship == 'Child' (or equivalent) with outcome followups, leading to a child age question",
+      "Must NOT use a separate boolean field to ask if they have a child — child status must be inferred from the relationship field",
+      "Must reject if child age < 8",
+      "Must reject if child age > 15",
+    ],
+    mockOutput: {
+      newFields: [
+        { id: "num_occupants", label: "How many people will be moving in (including yourself)?", value_kind: "number" },
+        {
+          id: "occupant_2_relationship",
+          label: "What is your relationship to the second occupant?",
+          value_kind: "enum",
+          options: ["Spouse/Partner", "Child", "Sibling", "Parent", "Friend", "Other"],
+        },
+        {
+          id: "occupant_3_relationship",
+          label: "What is your relationship to the third occupant?",
+          value_kind: "enum",
+          options: ["Spouse/Partner", "Child", "Sibling", "Parent", "Friend", "Other"],
+        },
+        { id: "child_age", label: "How old is the child?", value_kind: "number" },
+      ],
+      questions: [
+        {
+          id: "q_occupants",
+          text: "How many people will be moving in (including yourself), and what is your relationship to each of them?",
+          fieldIds: ["num_occupants", "occupant_2_relationship", "occupant_3_relationship"],
+          sort_order: 0,
+          branches: [
+            {
+              id: "b_too_many",
+              condition: { fieldId: "num_occupants", operator: ">", value: "3" },
+              outcome: "reject",
+              subQuestions: [],
+            },
+            {
+              id: "b_occ2_child",
+              condition: { fieldId: "occupant_2_relationship", operator: "==", value: "Child" },
+              outcome: "followups",
+              subQuestions: [
+                {
+                  id: "q_child_age_occ2",
+                  text: "How old is the child?",
                   fieldIds: ["child_age"],
                   sort_order: 0,
                   branches: [
                     {
-                      id: "b_child_too_young",
+                      id: "b_occ2_child_too_young",
                       condition: { fieldId: "child_age", operator: "<", value: "8" },
                       outcome: "reject",
-                      subQuestions: []
+                      subQuestions: [],
                     },
                     {
-                      id: "b_child_too_old",
+                      id: "b_occ2_child_too_old",
                       condition: { fieldId: "child_age", operator: ">", value: "15" },
                       outcome: "reject",
-                      subQuestions: []
-                    }
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        {
-          id: "q_occupants_info",
-          text: "Please provide the names and occupations of up to 3 people who will be living in the unit, and describe your relationship.",
-          fieldIds: [
-            "occupants_relationship",
-            "occupant_1_name", "occupant_1_job",
-            "occupant_2_name", "occupant_2_job",
-            "occupant_3_name", "occupant_3_job"
+                      subQuestions: [],
+                    },
+                  ],
+                },
+              ],
+            },
+            {
+              id: "b_occ3_child",
+              condition: { fieldId: "occupant_3_relationship", operator: "==", value: "Child" },
+              outcome: "followups",
+              subQuestions: [
+                {
+                  id: "q_child_age_occ3",
+                  text: "How old is the child?",
+                  fieldIds: ["child_age"],
+                  sort_order: 0,
+                  branches: [
+                    {
+                      id: "b_occ3_child_too_young",
+                      condition: { fieldId: "child_age", operator: "<", value: "8" },
+                      outcome: "reject",
+                      subQuestions: [],
+                    },
+                    {
+                      id: "b_occ3_child_too_old",
+                      condition: { fieldId: "child_age", operator: ">", value: "15" },
+                      outcome: "reject",
+                      subQuestions: [],
+                    },
+                  ],
+                },
+              ],
+            },
           ],
-          sort_order: 1,
-          branches: []
-        }
+        },
       ],
-      deletedQuestionIds: []
-    }
+      deletedQuestionIds: [],
+    },
   }
 ];

@@ -22,6 +22,7 @@ import { ShareLinkModal } from "@/app/components/ShareLinkModal";
 import { RuleProposalModal, type Proposal } from "@/app/components/RuleProposalModal";
 import LandlordFieldsSection from "@/app/components/LandlordFieldsSection";
 import VariablesSection from "@/app/components/VariablesSection";
+import QuestionMentionTextarea from "@/app/components/QuestionMentionTextarea";
 
 const TABS = ["Details", "Fields", "Questions", "Variables", "Rules", "Links", "AI Behavior"] as const;
 type Tab = (typeof TABS)[number];
@@ -380,13 +381,33 @@ export default function PropertySetupPage() {
     }
     try {
       setLoadingPhase("questions");
+
+      // Resolve @[question text] mentions → inject full question JSON as context
+      const mentionTexts = [...prompt.matchAll(/@\[([^\]]+)\]/g)]
+        .map((m) => m[1].trim())
+        .filter((t) => t.length > 0);
+      let description = prompt;
+      if (mentionTexts.length > 0) {
+        const mentionedQuestions = mentionTexts.flatMap((text) => {
+          const exact = questions.find((q) => q.text === text);
+          if (exact) return [exact];
+          const lower = text.toLowerCase();
+          return questions.filter((q) => q.text.toLowerCase().includes(lower));
+        });
+        const unique = [...new Map(mentionedQuestions.map((q) => [q.id, q])).values()];
+        if (unique.length > 0) {
+          description += `\n\nREFERENCED QUESTIONS (with full branch structure — modify or extend these as needed):\n${JSON.stringify(unique, null, 2)}`;
+        }
+      }
+
       const res = await fetch("/api/generate-fields", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          description: prompt,
+          description,
           existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
           existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
+          variables,
         }),
       });
       const data = await res.json();
@@ -895,12 +916,13 @@ export default function PropertySetupPage() {
                           </svg>
                         </button>
                       </div>
-                      <textarea
+                      <QuestionMentionTextarea
                         rows={4}
                         value={questionsPrompt}
-                        onChange={(e) => setQuestionsPrompt(e.target.value)}
+                        onChange={setQuestionsPrompt}
+                        questions={questions}
                         onKeyDown={(e) => { if (e.key === "Escape") { setQuestionsAiOpen(false); setQuestionsPrompt(""); } }}
-                        placeholder="e.g. Ask about number of occupants, pets, income, and move-in date"
+                        placeholder="e.g. Ask about number of occupants, pets, income, and move-in date — type @ to reference a question"
                         autoFocus
                         disabled={isTranscribing}
                         className="w-full resize-none rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm text-foreground placeholder:text-foreground/50 focus:border-teal-700/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20 disabled:opacity-50"
