@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
-import type { PropertyRecord, PropertyLinks, AiInstructions } from "@/lib/property";
+import type { PropertyRecord, PropertyLinks, AiInstructions, PropertyVariable } from "@/lib/property";
 import { DEFAULT_AI_INSTRUCTIONS, DEFAULT_LINKS, resolveAiInstructions } from "@/lib/property";
 import type { LandlordField } from "@/lib/landlord-field";
 import {
@@ -21,8 +21,9 @@ import { ConfirmDialog } from "@/app/components/ConfirmDialog";
 import { ShareLinkModal } from "@/app/components/ShareLinkModal";
 import { RuleProposalModal, type Proposal } from "@/app/components/RuleProposalModal";
 import LandlordFieldsSection from "@/app/components/LandlordFieldsSection";
+import VariablesSection from "@/app/components/VariablesSection";
 
-const TABS = ["Details", "Fields", "Questions", "Rules", "Links", "AI Behavior"] as const;
+const TABS = ["Details", "Fields", "Questions", "Variables", "Rules", "Links", "AI Behavior"] as const;
 type Tab = (typeof TABS)[number];
 
 function generateId() {
@@ -58,6 +59,7 @@ export default function PropertySetupPage() {
   const [description, setDescription] = useState("");
   const [fields, setFields] = useState<LandlordField[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [variables, setVariables] = useState<PropertyVariable[]>([]);
   const [rules, setRules] = useState<LandlordRule[]>([]);
   const [links, setLinks] = useState<PropertyLinks>(DEFAULT_LINKS);
   const [aiInstructions, setAiInstructions] = useState<AiInstructions>(DEFAULT_AI_INSTRUCTIONS);
@@ -124,6 +126,7 @@ export default function PropertySetupPage() {
       setQuestions(((p.questions as Question[]) ?? []).map((q) => ({ ...q, branches: q.branches ?? [] })));
       const migratedRules = migrateRules((p.rules as any[]) ?? []);
       setRules(migratedRules);
+      setVariables((p.variables as PropertyVariable[]) ?? []);
       setLinks({ ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) });
       setAiInstructions(resolveAiInstructions(p.ai_instructions));
       setSlug(p.slug || id);
@@ -132,7 +135,9 @@ export default function PropertySetupPage() {
         title: p.title, description: p.description,
         fields: (p.fields as LandlordField[]) ?? [],
         questions: ((p.questions as Question[]) ?? []).map((q) => ({ ...q, branches: q.branches ?? [] })),
-        rules: migratedRules, links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) },
+        rules: migratedRules,
+        variables: (p.variables as PropertyVariable[]) ?? [],
+        links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) },
         aiInstructions: resolveAiInstructions(p.ai_instructions),
       });
       hasLoadedRef.current = true;
@@ -144,9 +149,9 @@ export default function PropertySetupPage() {
   // ── Dirty tracking ──
   useEffect(() => {
     if (pageLoading) return;
-    const current = JSON.stringify({ title, description, fields, questions, rules, links, aiInstructions });
+    const current = JSON.stringify({ title, description, fields, questions, variables, rules, links, aiInstructions });
     setDirty(current !== lastSavedRef.current);
-  }, [title, description, fields, questions, rules, links, aiInstructions, pageLoading, lastSavedRef]);
+  }, [title, description, fields, questions, variables, rules, links, aiInstructions, pageLoading, lastSavedRef]);
 
   useEffect(() => {
     function onBeforeUnload(e: BeforeUnloadEvent) {
@@ -198,6 +203,7 @@ export default function PropertySetupPage() {
           description: description.trim(),
           fields,
           questions,
+          variables,
           rules,
           links,
           ai_instructions: aiInstructions,
@@ -220,7 +226,7 @@ export default function PropertySetupPage() {
           setTitle(newTitle);
         }
         setSlug(newSlug);
-        lastSavedRef.current = JSON.stringify({ title: newTitle, description, fields, questions, rules, links, aiInstructions });
+        lastSavedRef.current = JSON.stringify({ title: newTitle, description, fields, questions, variables, rules, links, aiInstructions });
         setDirty(false);
         if (savedIndicatorTimerRef.current) clearTimeout(savedIndicatorTimerRef.current);
         setShowSaved(true);
@@ -231,7 +237,7 @@ export default function PropertySetupPage() {
         return { error: null };
       }
     },
-    [id, title, description, fields, questions, rules, links, aiInstructions, supabase], // eslint-disable-line react-hooks/exhaustive-deps
+    [id, title, description, fields, questions, variables, rules, links, aiInstructions, supabase], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   saveRef.current = save;
@@ -251,7 +257,7 @@ export default function PropertySetupPage() {
   }, [save]);
 
   serializedStateRef.current = JSON.stringify({
-    title, description, fields, questions, rules, links, aiInstructions,
+    title, description, fields, questions, variables, rules, links, aiInstructions,
   });
 
   // Debounced autosave (2s after last edit while dirty)
@@ -273,6 +279,7 @@ export default function PropertySetupPage() {
     description,
     fields,
     questions,
+    variables,
     rules,
     links,
     aiInstructions,
@@ -302,13 +309,14 @@ export default function PropertySetupPage() {
             description: (state.description ?? "").trim(),
             fields: state.fields,
             questions: state.questions,
+            variables: state.variables,
             rules: state.rules,
             links: state.links,
             ai_instructions: state.aiInstructions,
             updated_at: new Date().toISOString(),
           })
           .eq("id", id)
-          .then(({ error }) => { if (error) console.error("[unmount-save]", error); });
+          .then(({ error }) => { if (error) console.error("[unmount-save]", error.message ?? error); });
       } catch { /* serialization error — skip */ }
     };
   }, [id, supabase]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -753,24 +761,37 @@ export default function PropertySetupPage() {
         <section className="rounded-xl border border-black/8 bg-white shadow-sm">
           {/* Tab bar */}
           <div className="flex gap-1 border-b border-black/5 px-6 pt-1">
-            {TABS.map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => {
-                  if (activeTab === "Fields" && tab !== "Fields") {
-                    setFields(prev => prev.filter(f => f.id.trim() !== "" || f.label.trim() !== ""));
-                  }
-                  setActiveTab(tab);
-                }}
-                className={`px-3 py-3 text-sm font-medium transition-colors ${activeTab === tab
-                  ? "border-b-2 border-teal-700 text-teal-700"
-                  : "text-foreground/60 hover:text-foreground/70"
-                  }`}
-              >
-                {tab}
-              </button>
-            ))}
+            {TABS.map((tab) => {
+              const count =
+                tab === "Fields" ? fields.length :
+                tab === "Questions" ? questions.length :
+                tab === "Rules" ? rules.length :
+                tab === "Variables" ? variables.length :
+                0;
+              return (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => {
+                    if (activeTab === "Fields" && tab !== "Fields") {
+                      setFields(prev => prev.filter(f => f.id.trim() !== "" || f.label.trim() !== ""));
+                    }
+                    setActiveTab(tab);
+                  }}
+                  className={`px-3 py-3 text-sm font-medium transition-colors ${activeTab === tab
+                    ? "border-b-2 border-teal-700 text-teal-700"
+                    : "text-foreground/60 hover:text-foreground/70"
+                    }`}
+                >
+                  {tab}
+                  {count > 0 && (
+                    <span className={`ml-1 rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none ${activeTab === tab ? "bg-teal-100 text-teal-700" : "bg-foreground/8 text-foreground/40"}`}>
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
           <div className="p-6">
@@ -834,6 +855,7 @@ export default function PropertySetupPage() {
                 <FlowEditor
                   questions={questions}
                   fields={fields}
+                  customVariables={variables}
                   onChange={setQuestions}
                   onGenerateTargeted={handleGenerateTargeted}
                   onCreateField={(label) => {
@@ -939,6 +961,20 @@ export default function PropertySetupPage() {
                     </button>
                   )}
                 </div>
+              </div>
+            )}
+
+            {/* ── Variables Tab ── */}
+            {activeTab === "Variables" && (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-sm font-medium text-foreground/80">Template variables</h3>
+                  <p className="text-xs text-foreground/60">
+                    Define custom variables to insert into question text using{" "}
+                    <code className="font-mono text-[11px]">{"{{key}}"}</code> syntax.
+                  </p>
+                </div>
+                <VariablesSection variables={variables} onChange={setVariables} />
               </div>
             )}
 

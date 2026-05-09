@@ -43,8 +43,9 @@ export class RealGenerationOutputProvider implements OutputProvider {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         description: prompt,
-        existingFields: [],
-        existingQuestions: [],
+        existingFields: testCase.existingFields ?? [],
+        existingQuestions: testCase.existingQuestions ?? [],
+        variables: testCase.propertyVariables ?? [],
       }),
     });
 

@@ -1,4 +1,4 @@
-import type { LandlordField } from "./landlord-field";
+import type { LandlordField, FieldValueKind } from "./landlord-field";
 import type { LandlordRule } from "./landlord-rule";
 import type { Question } from "./question";
 
@@ -42,6 +42,14 @@ export function resolveAiInstructions(
   return { ...DEFAULT_AI_INSTRUCTIONS, ...raw };
 }
 
+export type PropertyVariable = {
+  id: string;
+  key: string;
+  label: string;
+  value: string;
+  value_kind?: FieldValueKind;
+};
+
 /** Raw shape as stored in the `properties` table */
 export type PropertyRecord = {
   id: string;
@@ -57,6 +65,8 @@ export type PropertyRecord = {
   rules: LandlordRule[];
   links: PropertyLinks;
   ai_instructions: AiInstructions;
+  /** Landlord-defined template variables inserted into question text */
+  variables: PropertyVariable[];
   created_at: string;
   updated_at: string;
 };

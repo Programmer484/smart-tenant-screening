@@ -9,6 +9,7 @@ import {
   validateLandlordFieldLabel,
   validateEnumOptions,
 } from "@/lib/landlord-field";
+import type { LandlordRule } from "@/lib/landlord-rule";
 import { generateId } from "./RuleBuilder";
 
 const KIND_LABELS: Record<FieldValueKind, string> = {
@@ -39,8 +40,6 @@ function emptyField(): LandlordField & { _key: string; _isNew?: boolean } {
 }
 
 type FieldWithKey = LandlordField & { _key: string; _isNew?: boolean };
-
-
 
 function FieldRow({
   field,
@@ -76,7 +75,6 @@ function FieldRow({
       : null;
 
   const isLocked = !field._isNew;
-
   function handleLabelChange(newLabel: string) {
     const prevAutoId = labelToFieldId(field.label);
     const updated: FieldWithKey = { ...field, label: newLabel };
@@ -85,8 +83,6 @@ function FieldRow({
     }
     onChange(updated);
   }
-
-
 
   return (
     <div className="flex gap-3 rounded-xl border border-foreground/10 bg-background p-3 shadow-sm">
@@ -251,7 +247,6 @@ function FieldRow({
           </div>
         ) : null}
 
-
       </div>
 
       {/* Delete */}
@@ -275,6 +270,8 @@ export default function LandlordFieldsSection({
   fieldAction,
   onBeforeDelete,
   allFields,
+  rules: _rules,
+  onRulesChange: _onRulesChange,
 }: {
   fields: LandlordField[];
   onChange: (fields: LandlordField[]) => void;
@@ -282,6 +279,8 @@ export default function LandlordFieldsSection({
   /** Return false to cancel delete (e.g. parent will update `fields` after async confirm). */
   onBeforeDelete?: (field: LandlordField, index: number) => boolean;
   allFields?: LandlordField[];
+  rules?: LandlordRule[];
+  onRulesChange?: (rules: LandlordRule[]) => void;
 }) {
   function fingerprint(f: LandlordField[]) {
     return f.map((x) => x.id).join("\0") + "\0" + f.length;
