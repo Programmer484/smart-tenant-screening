@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Link from "next/link";
 import type { TestCase } from "@/lib/testing/aiQuestionTestCases";
-import type { PropertyVariable } from "@/lib/property";
 import type { TestResult } from "@/lib/testing/runner";
 import { ProposalReviewContent } from "@/app/components/RuleProposalModal";
 import type { Proposal } from "@/app/components/RuleProposalModal";
@@ -201,7 +201,12 @@ export default function AiQuestionTestsPage() {
   return (
     <div className="max-w-7xl mx-auto p-6 space-y-8">
       <div>
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">AI Question Generation Test Harness</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">AI Question Generation Test Harness</h1>
+          <Link href="/ai-chat-tests" className="text-sm text-teal-700 hover:underline">
+            → Chat response tests
+          </Link>
+        </div>
         <p className="text-gray-600">
           Internal tool for verifying AI question generator outputs against strict requirements using an LLM evaluator.
         </p>
@@ -388,6 +393,25 @@ export default function AiQuestionTestsPage() {
                         <h4 className="text-sm font-semibold uppercase tracking-wider text-gray-500 mb-2">Test Case</h4>
                         <TestCaseDetails testCase={testCase} />
                       </section>
+
+                      {r.output?.clarifyingQuestionsAsked && r.output.clarifyingQuestionsAsked.length > 0 && (
+                        <section>
+                          <h4 className="text-sm font-semibold uppercase tracking-wider text-gray-500 mb-2">Clarifying Questions Asked by AI</h4>
+                          <div className="bg-amber-50 border border-amber-200 p-3 rounded-lg space-y-2 text-sm">
+                            {r.output.clarifyingQuestionsAsked.map((q, i) => {
+                              const a = r.output?.clarifyingAnswersUsed?.[i] ?? "";
+                              return (
+                                <div key={i} className="flex flex-col gap-0.5">
+                                  <div className="text-amber-900 font-medium">Q: {q}</div>
+                                  <div className={a ? "text-amber-800 pl-3" : "text-amber-700/60 italic pl-3"}>
+                                    A: {a || "(skipped — no clarifyAnswers entry for this index)"}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </section>
+                      )}
 
                       {r.evaluation && (
                         <section>

@@ -1,5 +1,6 @@
 import { callClaude, extractText, stripCodeFences } from "@/lib/anthropic";
 import type { TestCase, AIQuestionOutput } from "./aiQuestionTestCases";
+import type { ChatTestCase } from "./chatTestCases";
 
 export type EvaluationResult = {
   pass: boolean;
@@ -114,5 +115,120 @@ ${JSON.stringify(output, null, 2)}
     };
   } catch (error) {
     throw new Error(`Evaluator returned invalid JSON: ${cleaned}\n\nError: ${(error as Error).message}`);
+  }
+}
+
+// ─── Chat-response evaluator ─────────────────────────────────────────────
+
+const CHAT_SYSTEM_PROMPT = `You are an expert AI evaluator for a tenant-facing chat assistant in a rental application system.
+
+You will be given:
+1. Test Case Name and Description
+2. The Property Fixture (title, description, fields, questions, rules, AI instructions)
+3. The Conversation Transcript (each turn includes the user message, the assistant's reply, what fields were extracted, and the final session status for that turn)
+4. The Final Answers state (merged field values after all turns)
+5. Requirements (the strict criteria the test must meet)
+
+## Session-status meanings
+- "in_progress" — interview still going
+- "clarifying" — applicant violated a rule but gets one chance to correct
+- "rejected" — applicant rejected (rule, branch reject, off-topic limit, or hostile)
+- "review" — flagged for manual landlord review
+- "qualified" — interview complete, no rules violated, follow-ups still allowed
+- "completed" — interview complete and conversation closed
+
+## Evaluation instructions
+- Evaluate the FINAL state of the transcript (and per-turn state where the requirement specifies a turn) against EACH requirement.
+- Be strict on outcomes: if a requirement says "sessionStatus must be 'rejected'", check the LAST turn's sessionStatus.
+- Be strict on extraction: if a requirement says a field must be extracted with a specific value, look at the per-turn extracted arrays AND the finalAnswers state.
+- Be lenient on the assistant's exact wording UNLESS the requirement specifies wording, length, or content.
+- For length requirements: count words in the relevant assistant reply.
+- For "ask question X next" requirements: judge intent — if the reply naturally elicits the field's value, it counts as asking that question, even if phrased loosely.
+
+Return your evaluation ONLY as a valid JSON object — no markdown, no commentary:
+{
+  "pass": boolean,
+  "score": number,
+  "summary": string,
+  "passedRequirements": string[],
+  "failedRequirements": string[],
+  "concerns": string[],
+  "suggestedFixes": string[]
+}`;
+
+type ChatTurnInput = {
+  userMessage: string;
+  assistantReply: string;
+  extracted: { fieldId: string; value: string }[];
+  sessionStatus: string;
+};
+
+export async function evaluateChatTranscript(
+  apiKey: string,
+  testCase: ChatTestCase,
+  turns: ChatTurnInput[],
+  finalAnswers: Record<string, string>,
+): Promise<EvaluationResult> {
+  const p = testCase.property;
+  const propertyBlock = JSON.stringify({
+    title: p.title ?? null,
+    description: p.description ?? null,
+    fields: p.fields,
+    questions: p.questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds, sort_order: q.sort_order, branches: q.branches })),
+    rules: p.rules ?? [],
+    variables: p.variables ?? [],
+    aiInstructions: p.aiInstructions ?? {},
+  }, null, 2);
+
+  const transcriptBlock = turns
+    .map((t, i) => `--- Turn ${i + 1} ---
+User: ${t.userMessage}
+Assistant: ${t.assistantReply}
+Extracted: ${JSON.stringify(t.extracted)}
+sessionStatus: ${t.sessionStatus}`)
+    .join("\n\n");
+
+  const userPrompt = `Test Case Name: ${testCase.name}
+
+Description: ${testCase.description}
+
+Property Fixture:
+${propertyBlock}
+
+Initial Answers (before any turns):
+${JSON.stringify(testCase.initialAnswers ?? {}, null, 2)}
+
+Conversation Transcript:
+${transcriptBlock || "(no turns)"}
+
+Final Answers (merged after all turns):
+${JSON.stringify(finalAnswers, null, 2)}
+
+Requirements:
+${testCase.requirements.map((r) => `- ${r}`).join("\n")}
+`;
+
+  const response = await callClaude(apiKey, {
+    system: CHAT_SYSTEM_PROMPT,
+    messages: [{ role: "user", content: userPrompt }],
+    max_tokens: 1024,
+  });
+
+  const raw = extractText(response);
+  const cleaned = stripCodeFences(raw);
+
+  try {
+    const parsed = JSON.parse(cleaned) as EvaluationResult;
+    return {
+      pass: !!parsed.pass,
+      score: typeof parsed.score === "number" ? parsed.score : 0,
+      summary: parsed.summary || "No summary provided",
+      passedRequirements: Array.isArray(parsed.passedRequirements) ? parsed.passedRequirements : [],
+      failedRequirements: Array.isArray(parsed.failedRequirements) ? parsed.failedRequirements : [],
+      concerns: Array.isArray(parsed.concerns) ? parsed.concerns : [],
+      suggestedFixes: Array.isArray(parsed.suggestedFixes) ? parsed.suggestedFixes : [],
+    };
+  } catch (error) {
+    throw new Error(`Chat evaluator returned invalid JSON: ${cleaned}\n\nError: ${(error as Error).message}`);
   }
 }

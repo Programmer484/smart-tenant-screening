@@ -25,6 +25,7 @@ export class MockOutputProvider implements OutputProvider {
 }
 
 import { POST as generateFields, buildSystemPrompt } from "@/app/api/generate-fields/route";
+import { POST as clarifyPrompt } from "@/app/api/clarify-prompt/route";
 
 // Stub for the real generation provider
 export class RealGenerationOutputProvider implements OutputProvider {
@@ -38,15 +39,50 @@ export class RealGenerationOutputProvider implements OutputProvider {
       }
     }
 
+    const sharedBody = {
+      existingFields: testCase.existingFields ?? [],
+      existingQuestions: testCase.existingQuestions ?? [],
+      variables: testCase.propertyVariables ?? [],
+    };
+
+    // Phase 1: clarify (mirrors the property page UI flow). Fail-soft on error.
+    let clarifyingQuestionsAsked: string[] = [];
+    try {
+      const clarifyReq = new Request("http://localhost/api/clarify-prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: prompt, ...sharedBody }),
+      });
+      const clarifyRes = await clarifyPrompt(clarifyReq);
+      const clarifyData = await clarifyRes.json();
+      if (Array.isArray(clarifyData.questions)) {
+        clarifyingQuestionsAsked = clarifyData.questions.filter((x: unknown): x is string => typeof x === "string");
+      }
+    } catch {
+      // ignore — proceed to generate with the original prompt
+    }
+
+    const clarifyingAnswersUsed: string[] = [];
+    let augmentedDescription = prompt;
+    if (clarifyingQuestionsAsked.length > 0) {
+      const supplied = testCase.clarifyAnswers ?? [];
+      const qaPairs = clarifyingQuestionsAsked
+        .map((q, i) => {
+          const a = (supplied[i] ?? "").trim();
+          clarifyingAnswersUsed.push(a);
+          return { q, a };
+        })
+        .filter((qa) => qa.a.length > 0);
+      if (qaPairs.length > 0) {
+        augmentedDescription += `\n\nAdditional context (clarifying answers):\n${qaPairs.map((qa) => `Q: ${qa.q}\nA: ${qa.a}`).join("\n\n")}`;
+      }
+    }
+
+    // Phase 2: generate.
     const req = new Request("http://localhost/api/generate-fields", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        description: prompt,
-        existingFields: testCase.existingFields ?? [],
-        existingQuestions: testCase.existingQuestions ?? [],
-        variables: testCase.propertyVariables ?? [],
-      }),
+      body: JSON.stringify({ description: augmentedDescription, ...sharedBody }),
     });
 
     const res = await generateFields(req);
@@ -61,9 +97,19 @@ export class RealGenerationOutputProvider implements OutputProvider {
       questions: data.questions,
       deletedQuestionIds: data.deletedQuestionIds,
       prompts: {
-        system: buildSystemPrompt([], [], 3, 0),
-        user: prompt,
+        // Mirror the actual context sent on attempt 0 so the preview matches what the AI saw.
+        // Note: max-fields-per-question matches DEFAULT_MAX_FIELDS_PER_QUESTION in the route.
+        system: buildSystemPrompt(
+          (testCase.existingFields ?? []).map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind as string })),
+          testCase.existingQuestions ?? [],
+          3,
+          0,
+          testCase.propertyVariables ?? [],
+        ),
+        user: augmentedDescription,
       },
+      clarifyingQuestionsAsked: clarifyingQuestionsAsked.length > 0 ? clarifyingQuestionsAsked : undefined,
+      clarifyingAnswersUsed: clarifyingQuestionsAsked.length > 0 ? clarifyingAnswersUsed : undefined,
     };
   }
 }

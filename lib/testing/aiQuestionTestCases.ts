@@ -12,11 +12,15 @@ export type AIQuestionOutput = {
   newRules?: LandlordRule[];
   modifiedRules?: LandlordRule[];
   deletedRuleIds?: string[];
-  
+
   prompts?: {
     system?: string;
     user?: string;
   };
+  /** Clarifying questions the AI asked before generating (if any). Only populated by the real provider. */
+  clarifyingQuestionsAsked?: string[];
+  /** Answers the runner supplied to those clarifying questions (parallel to clarifyingQuestionsAsked). */
+  clarifyingAnswersUsed?: string[];
 };
 
 export type TestCase = {
@@ -30,6 +34,8 @@ export type TestCase = {
   propertyVariables?: PropertyVariable[];
   existingFields?: Pick<LandlordField, "id" | "label" | "value_kind">[];
   existingQuestions?: { id: string; text: string; fieldIds: string[] }[];
+  /** Pre-canned answers used (in order) if the AI's clarify step asks questions. Empty entries are skipped. */
+  clarifyAnswers?: string[];
   requirements: string[];
   mockOutput: AIQuestionOutput;
 };

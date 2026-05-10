@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { testCases } from "@/lib/testing/aiQuestionTestCases";
-import { runTests, MockOutputProvider, RealGenerationOutputProvider } from "@/lib/testing/runner";
+import { chatTestCases } from "@/lib/testing/chatTestCases";
+import { runChatTests } from "@/lib/testing/chatRunner";
 
 export async function POST(req: Request) {
   const apiKey = process.env.CLAUDE_API_KEY;
@@ -18,19 +18,17 @@ export async function POST(req: Request) {
   const rec = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
   const selectedIds = Array.isArray(rec.testIds) ? rec.testIds : [];
 
-  let testsToRun = testCases;
+  let testsToRun = chatTestCases;
   if (selectedIds.length > 0) {
-    testsToRun = testCases.filter((t) => selectedIds.includes(t.id));
+    testsToRun = chatTestCases.filter((t) => selectedIds.includes(t.id));
   }
 
   if (testsToRun.length === 0) {
     return NextResponse.json({ error: "No tests found to run" }, { status: 400 });
   }
 
-  const provider = rec.useRealAI ? new RealGenerationOutputProvider() : new MockOutputProvider();
-
   try {
-    const results = await runTests(apiKey, testsToRun, provider);
+    const results = await runChatTests(apiKey, testsToRun);
     return NextResponse.json({ results });
   } catch (error) {
     return NextResponse.json({ error: (error as Error).message }, { status: 500 });
@@ -38,18 +36,15 @@ export async function POST(req: Request) {
 }
 
 export async function GET() {
-  const tests = testCases.map(t => ({
+  const tests = chatTestCases.map((t) => ({
     id: t.id,
     name: t.name,
     description: t.description,
-    prompt: t.prompt,
-    variables: t.variables,
-    propertyVariables: t.propertyVariables,
-    existingFields: t.existingFields,
-    existingQuestions: t.existingQuestions,
-    clarifyAnswers: t.clarifyAnswers,
+    property: t.property,
+    initialAnswers: t.initialAnswers,
+    initialMessages: t.initialMessages,
+    userMessages: t.userMessages,
     requirements: t.requirements,
-    mockOutput: t.mockOutput,
   }));
   return NextResponse.json({ tests });
 }

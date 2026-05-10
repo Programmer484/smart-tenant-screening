@@ -86,6 +86,8 @@ export default function PropertySetupPage() {
   const hasLoadedRef = useRef(false);
   const [questionsPrompt, setQuestionsPrompt] = useState("");
   const [questionsAiOpen, setQuestionsAiOpen] = useState(false);
+  const [clarifyingQuestions, setClarifyingQuestions] = useState<string[]>([]);
+  const [clarifyingAnswers, setClarifyingAnswers] = useState<string[]>([]);
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
@@ -303,10 +305,13 @@ export default function PropertySetupPage() {
       if (serializedStateRef.current === lastSavedRef.current) return;
       try {
         const state = JSON.parse(serializedStateRef.current);
+        const finalTitle = (state.title ?? "").trim() || "New Property";
+        const finalSlug = finalTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
         void supabase
           .from("properties")
           .update({
-            title: (state.title ?? "").trim() || "New Property",
+            title: finalTitle,
+            slug: finalSlug,
             description: (state.description ?? "").trim(),
             fields: state.fields,
             questions: state.questions,
@@ -374,6 +379,77 @@ export default function PropertySetupPage() {
     }
   }
 
+  function buildDescription(rawPrompt: string): string {
+    const mentionTexts = [...rawPrompt.matchAll(/@\[([^\]]+)\]/g)]
+      .map((m) => m[1].trim())
+      .filter((t) => t.length > 0);
+    let description = rawPrompt;
+    if (mentionTexts.length > 0) {
+      const mentionedQuestions = mentionTexts.flatMap((text) => {
+        const exact = questions.find((q) => q.text === text);
+        if (exact) return [exact];
+        const lower = text.toLowerCase();
+        return questions.filter((q) => q.text.toLowerCase().includes(lower));
+      });
+      const unique = [...new Map(mentionedQuestions.map((q) => [q.id, q])).values()];
+      if (unique.length > 0) {
+        description += `\n\nREFERENCED QUESTIONS (with full branch structure — modify or extend these as needed):\n${JSON.stringify(unique, null, 2)}`;
+      }
+    }
+    return description;
+  }
+
+  async function runGeneration(description: string): Promise<boolean> {
+    const res = await fetch("/api/generate-fields", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        description,
+        existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
+        existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
+        variables,
+      }),
+    });
+    const data = await res.json();
+
+    // Two failure shapes: structured `ok: false` errors (validation / orphan fields)
+    // and bare `{ error }` payloads (e.g. ClaudeApiError catch path with non-2xx HTTP status).
+    if (data.ok === false || (!res.ok && data.error)) {
+      if (data.raw) {
+        console.group("[generate-fields] AI returned bad output");
+        console.log("Error:", data.error);
+        console.log("Raw AI response:\n", data.raw);
+        console.groupEnd();
+      }
+      if (data.violations?.length) {
+        const names = data.violations.map((v: { text: string }) => `"${v.text}"`).join(", ");
+        toast.error(`${data.error}: ${names}`);
+      } else {
+        toast.error(data.error ?? "Generation failed");
+      }
+      return false;
+    }
+
+    const proposedFields: LandlordField[] = data.newFields ?? [];
+    const proposedQuestions: Question[] = data.questions ?? [];
+    const deletedQuestionIds: string[] = data.deletedQuestionIds ?? [];
+
+    if (proposedFields.length === 0 && proposedQuestions.length === 0 && deletedQuestionIds.length === 0) {
+      toast.info("No new items to add — AI found everything is covered.");
+      return true;
+    }
+
+    setRuleProposal({
+      newRules: [],
+      modifiedRules: [],
+      deletedRuleIds: [],
+      newFields: proposedFields,
+      proposedQuestions,
+      deletedQuestionIds,
+    });
+    return true;
+  }
+
   async function handleGenerateQuestions(prompt: string) {
     if (!prompt.trim()) {
       toast.error("Enter a prompt describing what questions to generate");
@@ -381,70 +457,67 @@ export default function PropertySetupPage() {
     }
     try {
       setLoadingPhase("questions");
+      const description = buildDescription(prompt);
 
-      // Resolve @[question text] mentions → inject full question JSON as context
-      const mentionTexts = [...prompt.matchAll(/@\[([^\]]+)\]/g)]
-        .map((m) => m[1].trim())
-        .filter((t) => t.length > 0);
-      let description = prompt;
-      if (mentionTexts.length > 0) {
-        const mentionedQuestions = mentionTexts.flatMap((text) => {
-          const exact = questions.find((q) => q.text === text);
-          if (exact) return [exact];
-          const lower = text.toLowerCase();
-          return questions.filter((q) => q.text.toLowerCase().includes(lower));
+      // Step 1: ask the AI whether it needs more context. Fail-soft: any error proceeds to generate.
+      let clarifyQuestions: string[] = [];
+      try {
+        const clarifyRes = await fetch("/api/clarify-prompt", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            description,
+            existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
+            existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
+            variables,
+          }),
         });
-        const unique = [...new Map(mentionedQuestions.map((q) => [q.id, q])).values()];
-        if (unique.length > 0) {
-          description += `\n\nREFERENCED QUESTIONS (with full branch structure — modify or extend these as needed):\n${JSON.stringify(unique, null, 2)}`;
+        if (clarifyRes.ok) {
+          const data = await clarifyRes.json();
+          if (Array.isArray(data.questions)) clarifyQuestions = data.questions;
         }
+      } catch (err) {
+        console.warn("[clarify-prompt] failed, proceeding to generate", err);
       }
 
-      const res = await fetch("/api/generate-fields", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          description,
-          existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
-          existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
-          variables,
-        }),
-      });
-      const data = await res.json();
-
-      if (data.ok === false) {
-        if (data.raw) {
-          console.group("[generate-fields] AI returned bad output");
-          console.log("Error:", data.error);
-          console.log("Raw AI response:\n", data.raw);
-          console.groupEnd();
-        }
-        if (data.violations?.length) {
-          const names = data.violations.map((v: { text: string }) => `"${v.text}"`).join(", ");
-          toast.error(`${data.error}: ${names}`);
-        } else {
-          toast.error(data.error ?? "Generation failed");
-        }
+      if (clarifyQuestions.length > 0) {
+        setClarifyingQuestions(clarifyQuestions);
+        setClarifyingAnswers(new Array(clarifyQuestions.length).fill(""));
         return;
       }
 
-      const proposedFields: LandlordField[] = data.newFields ?? [];
-      const proposedQuestions: Question[] = data.questions ?? [];
-      const deletedQuestionIds: string[] = data.deletedQuestionIds ?? [];
-
-      if (proposedFields.length === 0 && proposedQuestions.length === 0 && deletedQuestionIds.length === 0) {
-        toast.info("No new items to add — AI found everything is covered.");
-        return;
+      const ok = await runGeneration(description);
+      if (ok) {
+        setQuestionsPrompt("");
+        setQuestionsAiOpen(false);
       }
+    } catch (err) {
+      console.error("[generateQuestions]", err);
+      toast.error("Generation failed — please try again");
+    } finally {
+      setLoadingPhase(null);
+    }
+  }
 
-      setRuleProposal({
-        newRules: [],
-        modifiedRules: [],
-        deletedRuleIds: [],
-        newFields: proposedFields,
-        proposedQuestions,
-        deletedQuestionIds,
-      });
+  async function submitClarifications(skip: boolean) {
+    try {
+      setLoadingPhase("questions");
+      let description = buildDescription(questionsPrompt);
+      if (!skip) {
+        const qaPairs = clarifyingQuestions
+          .map((q, i) => ({ q, a: clarifyingAnswers[i]?.trim() ?? "" }))
+          .filter((qa) => qa.a.length > 0);
+        if (qaPairs.length > 0) {
+          description += `\n\nAdditional context (clarifying answers):\n${qaPairs.map((qa) => `Q: ${qa.q}\nA: ${qa.a}`).join("\n\n")}`;
+        }
+      }
+      const ok = await runGeneration(description);
+      if (ok) {
+        setClarifyingQuestions([]);
+        setClarifyingAnswers([]);
+        setQuestionsPrompt("");
+        setQuestionsAiOpen(false);
+      }
     } catch (err) {
       console.error("[generateQuestions]", err);
       toast.error("Generation failed — please try again");
@@ -904,10 +977,17 @@ export default function PropertySetupPage() {
                   {questionsAiOpen ? (
                     <div className="flex w-80 flex-col gap-2 rounded-xl border border-teal-700/20 bg-white p-3 shadow-lg">
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-medium text-foreground/60">Generate with AI</span>
+                        <span className="text-xs font-medium text-foreground/60">
+                          {clarifyingQuestions.length > 0 ? "A few quick questions" : "Generate with AI"}
+                        </span>
                         <button
                           type="button"
-                          onClick={() => { setQuestionsAiOpen(false); setQuestionsPrompt(""); }}
+                          onClick={() => {
+                            setQuestionsAiOpen(false);
+                            setQuestionsPrompt("");
+                            setClarifyingQuestions([]);
+                            setClarifyingAnswers([]);
+                          }}
                           aria-label="Close"
                           className="rounded p-0.5 text-foreground/40 hover:text-foreground/70"
                         >
@@ -916,64 +996,127 @@ export default function PropertySetupPage() {
                           </svg>
                         </button>
                       </div>
-                      <QuestionMentionTextarea
-                        rows={4}
-                        value={questionsPrompt}
-                        onChange={setQuestionsPrompt}
-                        questions={questions}
-                        onKeyDown={(e) => { if (e.key === "Escape") { setQuestionsAiOpen(false); setQuestionsPrompt(""); } }}
-                        placeholder="e.g. Ask about number of occupants, pets, income, and move-in date — type @ to reference a question"
-                        autoFocus
-                        disabled={isTranscribing}
-                        className="w-full resize-none rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm text-foreground placeholder:text-foreground/50 focus:border-teal-700/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20 disabled:opacity-50"
-                      />
-                      <div className="flex items-center gap-2">
-                        {/* Mic button */}
-                        <button
-                          type="button"
-                          onClick={() => void (isRecording ? stopRecording() : startRecording())}
-                          disabled={isTranscribing || loadingPhase !== null}
-                          aria-label={isRecording ? "Stop recording" : "Start recording"}
-                          className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${isRecording ? "bg-red-500 text-white" : "bg-foreground/8 text-foreground/60 hover:bg-foreground/12 hover:text-foreground/80"}`}
-                        >
-                          {isRecording && (
-                            <span className="absolute inset-0 animate-ping rounded-full bg-red-400 opacity-50" />
-                          )}
-                          {isTranscribing ? (
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="animate-spin" aria-hidden>
-                              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5" strokeDasharray="40 20" />
-                            </svg>
-                          ) : (
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden>
-                              <rect x="9" y="2" width="6" height="13" rx="3" fill="currentColor" />
-                              <path d="M5 10a7 7 0 0014 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                              <line x1="12" y1="19" x2="12" y2="23" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                            </svg>
-                          )}
-                        </button>
-                        {/* Timer */}
-                        {isRecording && (
-                          <span className="font-mono text-xs tabular-nums text-red-500">
-                            {`${Math.floor(recordingSeconds / 60)}:${String(recordingSeconds % 60).padStart(2, "0")}`}
-                            <span className="ml-1 text-red-400/70">/ 5:00</span>
-                          </span>
-                        )}
-                        <div className="ml-auto">
-                          <button
-                            type="button"
-                            onClick={() => void handleGenerateQuestions(questionsPrompt).then(() => { setQuestionsPrompt(""); setQuestionsAiOpen(false); })}
-                            disabled={!questionsPrompt.trim() || loadingPhase !== null || isRecording || isTranscribing}
-                            className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-teal-800 disabled:opacity-60"
-                          >
-                            {loadingPhase === "questions" ? "Generating…" : "Generate with AI"}
-                          </button>
-                        </div>
-                      </div>
+
+                      {clarifyingQuestions.length > 0 ? (
+                        <>
+                          <div className="rounded-md border border-foreground/8 bg-foreground/[0.02] px-2 py-1.5 text-xs text-foreground/55 whitespace-pre-wrap">
+                            {questionsPrompt}
+                          </div>
+                          <div className="flex flex-col gap-2">
+                            {clarifyingQuestions.map((q, i) => (
+                              <div key={i} className="flex flex-col gap-1">
+                                <label className="text-xs font-medium text-foreground/75">{q}</label>
+                                <textarea
+                                  rows={2}
+                                  value={clarifyingAnswers[i] ?? ""}
+                                  onChange={(e) => {
+                                    const next = [...clarifyingAnswers];
+                                    next[i] = e.target.value;
+                                    setClarifyingAnswers(next);
+                                  }}
+                                  placeholder="(optional)"
+                                  className="resize-none rounded-md border border-foreground/10 bg-white px-2 py-1 text-xs text-foreground placeholder:text-foreground/40 focus:border-teal-700/60 focus:outline-none focus:ring-1 focus:ring-teal-700/20"
+                                />
+                              </div>
+                            ))}
+                          </div>
+                          <div className="flex items-center justify-between gap-2">
+                            <button
+                              type="button"
+                              onClick={() => { setClarifyingQuestions([]); setClarifyingAnswers([]); }}
+                              disabled={loadingPhase !== null}
+                              className="text-xs text-foreground/55 hover:text-foreground/80 disabled:opacity-50"
+                            >
+                              ← Edit prompt
+                            </button>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => void submitClarifications(true)}
+                                disabled={loadingPhase !== null}
+                                className="text-xs text-foreground/55 hover:text-foreground/80 disabled:opacity-50"
+                              >
+                                Skip
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void submitClarifications(false)}
+                                disabled={loadingPhase !== null}
+                                className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-teal-800 disabled:opacity-60"
+                              >
+                                {loadingPhase === "questions" ? "Generating…" : "Generate"}
+                              </button>
+                            </div>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <QuestionMentionTextarea
+                            rows={4}
+                            value={questionsPrompt}
+                            onChange={setQuestionsPrompt}
+                            questions={questions}
+                            onKeyDown={(e) => { if (e.key === "Escape") { setQuestionsAiOpen(false); setQuestionsPrompt(""); } }}
+                            placeholder="e.g. Ask about number of occupants, pets, income, and move-in date — type @ to reference a question"
+                            autoFocus
+                            disabled={isTranscribing}
+                            className="w-full resize-none rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm text-foreground placeholder:text-foreground/50 focus:border-teal-700/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20 disabled:opacity-50"
+                          />
+                          <div className="flex items-center gap-2">
+                            {/* Mic button */}
+                            <button
+                              type="button"
+                              onClick={() => void (isRecording ? stopRecording() : startRecording())}
+                              disabled={isTranscribing || loadingPhase !== null}
+                              aria-label={isRecording ? "Stop recording" : "Start recording"}
+                              className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${isRecording ? "bg-red-500 text-white" : "bg-foreground/8 text-foreground/60 hover:bg-foreground/12 hover:text-foreground/80"}`}
+                            >
+                              {isRecording && (
+                                <span className="absolute inset-0 animate-ping rounded-full bg-red-400 opacity-50" />
+                              )}
+                              {isTranscribing ? (
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="animate-spin" aria-hidden>
+                                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5" strokeDasharray="40 20" />
+                                </svg>
+                              ) : (
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden>
+                                  <rect x="9" y="2" width="6" height="13" rx="3" fill="currentColor" />
+                                  <path d="M5 10a7 7 0 0014 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                                  <line x1="12" y1="19" x2="12" y2="23" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                                </svg>
+                              )}
+                            </button>
+                            {/* Timer */}
+                            {isRecording && (
+                              <span className="font-mono text-xs tabular-nums text-red-500">
+                                {`${Math.floor(recordingSeconds / 60)}:${String(recordingSeconds % 60).padStart(2, "0")}`}
+                                <span className="ml-1 text-red-400/70">/ 5:00</span>
+                              </span>
+                            )}
+                            <div className="ml-auto">
+                              <button
+                                type="button"
+                                onClick={() => void handleGenerateQuestions(questionsPrompt)}
+                                disabled={!questionsPrompt.trim() || loadingPhase !== null || isRecording || isTranscribing}
+                                className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-teal-800 disabled:opacity-60"
+                              >
+                                {loadingPhase === "questions" ? "Thinking…" : "Generate with AI"}
+                              </button>
+                            </div>
+                          </div>
+                        </>
+                      )}
                     </div>
                   ) : (
                     <button
                       type="button"
-                      onClick={() => setQuestionsAiOpen(true)}
+                      onClick={() => {
+                        // Defensive: clear any stale clarifying state from a previously closed session
+                        // so an in-flight clarify response can't surface old questions on next open.
+                        setClarifyingQuestions([]);
+                        setClarifyingAnswers([]);
+                        setQuestionsAiOpen(true);
+                      }}
                       aria-label="Generate with AI"
                       className="flex h-10 w-10 items-center justify-center rounded-full bg-teal-700 text-white shadow-md transition-colors hover:bg-teal-800"
                     >
