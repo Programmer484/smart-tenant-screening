@@ -15,12 +15,14 @@ import FlowEditor from "@/app/components/FlowEditor";
 import { PropertyEditorSkeleton } from "@/app/components/Skeleton";
 import { ConfirmDialog } from "@/app/components/ConfirmDialog";
 import { DeleteFieldDialog } from "@/app/components/DeleteFieldDialog";
+import { DeleteVariableDialog } from "@/app/components/DeleteVariableDialog";
 import { ShareLinkModal } from "@/app/components/ShareLinkModal";
 import { RuleProposalModal, type Proposal } from "@/app/components/RuleProposalModal";
 import LandlordFieldsSection from "@/app/components/LandlordFieldsSection";
 import VariablesSection from "@/app/components/VariablesSection";
 import QuestionMentionTextarea from "@/app/components/QuestionMentionTextarea";
 import { generateId } from "@/lib/id-utils";
+import { isConditionValid } from "@/lib/rule-engine";
 import {
   validateLandlordFieldId,
   validateLandlordFieldLabel,
@@ -83,6 +85,9 @@ export default function PropertySetupPage() {
   const savedIndicatorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const serializedStateRef = useRef("");
   const hasLoadedRef = useRef(false);
+  const lastValidFieldsRef = useRef<LandlordField[]>([]);
+  const lastValidVariablesRef = useRef<PropertyVariable[]>([]);
+
   const [questionsPrompt, setQuestionsPrompt] = useState("");
   const [questionsAiOpen, setQuestionsAiOpen] = useState(false);
   const [clarifyingQuestions, setClarifyingQuestions] = useState<string[]>([]);
@@ -95,6 +100,7 @@ export default function PropertySetupPage() {
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [ruleProposal, setRuleProposal] = useState<Proposal | null>(null);
   const [fieldDeleteIndex, setFieldDeleteIndex] = useState<number | null>(null);
+  const [varDeleteIndex, setVarDeleteIndex] = useState<number | null>(null);
 
   // Test tab state
   type TestOutcome = "qualified" | "rejected" | "review" | "in_progress";
@@ -111,12 +117,6 @@ export default function PropertySetupPage() {
 
   const descRef = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => {
-    const el = descRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [description]);
 
   // ── Load property ──
   useEffect(() => {
@@ -139,9 +139,13 @@ export default function PropertySetupPage() {
       setDescription(p.description);
       const loadedFields = (p.fields as LandlordField[]) ?? [];
       const hasNameField = loadedFields.some((f) => f.id === NAME_FIELD.id);
-      setFields(hasNameField ? loadedFields : [NAME_FIELD, ...loadedFields]);
+      const resolvedFields = hasNameField ? loadedFields : [NAME_FIELD, ...loadedFields];
+      setFields(resolvedFields);
+      lastValidFieldsRef.current = resolvedFields;
       setQuestions(((p.questions as Question[]) ?? []).map((q) => ({ ...q, branches: q.branches ?? [] })));
-      setVariables((p.variables as PropertyVariable[]) ?? []);
+      const loadedVars = (p.variables as PropertyVariable[]) ?? [];
+      setVariables(loadedVars);
+      lastValidVariablesRef.current = loadedVars;
       setLinks({ ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) });
       setAiInstructions(resolveAiInstructions(p.ai_instructions));
       setSlug(p.slug || id);
@@ -447,7 +451,7 @@ export default function PropertySetupPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         description,
-        existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
+        existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind, options: f.options })),
         existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
         variables,
         links,
@@ -512,7 +516,7 @@ export default function PropertySetupPage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             description,
-            existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
+            existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind, options: f.options })),
             existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
             variables,
           }),
@@ -579,7 +583,7 @@ export default function PropertySetupPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           description: `Modify this specific question and its branches to: ${prompt}. \n\nIMPORTANT: Return EXACTLY ONE question in the 'questions' array, which must have the id "${question.id}". Here is the current JSON of the question:\n${JSON.stringify(question, null, 2)}`,
-          existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
+          existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind, options: f.options })),
           existingQuestions: [{ id: question.id, text: question.text, fieldIds: question.fieldIds }],
         }),
       });
@@ -735,10 +739,10 @@ export default function PropertySetupPage() {
     if (Array.isArray(ruleProposal.variables)) {
       setVariables((prev) => {
         const allTexts = getAllQuestionTexts(questions);
-        const proposalKeys = new Set(ruleProposal.variables!.map((v) => v.key));
+        const proposalKeys = new Set(ruleProposal.variables!.map((v) => v.id));
         const protected_ = prev.filter((v) => {
-          if (proposalKeys.has(v.key)) return false;
-          return allTexts.some((t) => t.includes(`{{${v.key}}}`));
+          if (proposalKeys.has(v.id)) return false;
+          return allTexts.some((t) => t.includes(`{{${v.id}}}`));
         });
         return [...protected_, ...ruleProposal.variables!];
       });
@@ -789,10 +793,12 @@ export default function PropertySetupPage() {
     setFieldDeleteIndex(index);
   }
 
-  function stripBranchesForField(branches: import("@/lib/question").Branch[], fid: string): import("@/lib/question").Branch[] {
+  type Branch = import("@/lib/question").Branch;
+
+  function stripBranches(branches: Branch[], shouldRemove: (b: Branch) => boolean): Branch[] {
     return branches
-      .filter((b) => b.condition.fieldId !== fid)
-      .map((b) => ({ ...b, subQuestions: b.subQuestions.map((sq) => ({ ...sq, branches: stripBranchesForField(sq.branches, fid) })) }));
+      .filter((b) => !shouldRemove(b))
+      .map((b) => ({ ...b, subQuestions: b.subQuestions.map((sq) => ({ ...sq, branches: stripBranches(sq.branches, shouldRemove) })) }));
   }
 
   function confirmDeleteField() {
@@ -810,12 +816,108 @@ export default function PropertySetupPage() {
         .map((q) => ({
           ...q,
           fieldIds: q.fieldIds.filter((x) => x !== fid),
-          branches: stripBranchesForField(q.branches, fid),
+          branches: stripBranches(q.branches, (b) => b.condition.fieldId === fid),
         }))
         .filter((q) => q.fieldIds.length > 0);
       return next.map((q, i) => ({ ...q, sort_order: i }));
     });
     setFields((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function cascadeInvalidBranches(
+    updatedFields: import("@/lib/landlord-field").LandlordField[],
+    updatedVars: import("@/lib/property").PropertyVariable[],
+  ) {
+    const nextQuestions = questions.map((q) => ({
+      ...q,
+      branches: stripBranches(q.branches, (b) => !isConditionValid(b.condition, updatedFields, updatedVars)),
+    }));
+    const removedAny = nextQuestions.some((q, i) => q.branches.length !== questions[i].branches.length);
+    setQuestions(nextQuestions);
+    if (removedAny) toast.warning("Some branch conditions were removed — both sides of a condition must be the same type.");
+  }
+
+  function handleFieldsChange(updatedFields: import("@/lib/landlord-field").LandlordField[]) {
+    if (updatedFields.every(f => f.label.trim())) {
+      lastValidFieldsRef.current = updatedFields;
+    }
+    cascadeInvalidBranches(updatedFields, variables);
+    setFields(updatedFields);
+  }
+
+  function handleVariablesChange(updatedVars: import("@/lib/property").PropertyVariable[]) {
+    if (updatedVars.every(v => v.label.trim())) {
+      lastValidVariablesRef.current = updatedVars;
+    }
+    cascadeInvalidBranches(fields, updatedVars);
+    setVariables(updatedVars);
+  }
+
+  function getQuestionsWithVarInText(token: string): import("@/lib/question").Question[] {
+    const result: import("@/lib/question").Question[] = [];
+    function traverse(qs: import("@/lib/question").Question[]) {
+      for (const q of qs) {
+        if (q.text.includes(token)) result.push(q);
+        for (const b of q.branches) traverse(b.subQuestions);
+      }
+    }
+    traverse(questions);
+    return result;
+  }
+
+  function getQuestionsWithVarInCondition(token: string): import("@/lib/question").Question[] {
+    const result: import("@/lib/question").Question[] = [];
+    function traverse(qs: import("@/lib/question").Question[]) {
+      for (const q of qs) {
+        if (q.branches.some((b) => b.condition.value.includes(token))) result.push(q);
+        for (const b of q.branches) traverse(b.subQuestions);
+      }
+    }
+    traverse(questions);
+    return result;
+  }
+
+  function requestDeleteVariable(index: number) {
+    const variable = variables[index];
+    if (!variable.id) {
+      setVariables((prev) => prev.filter((_, i) => i !== index));
+      return;
+    }
+    const token = `{{${variable.id}}}`;
+    const hasRefs = getQuestionsWithVarInText(token).length > 0 || getQuestionsWithVarInCondition(token).length > 0;
+    if (!hasRefs) {
+      setVariables((prev) => prev.filter((_, i) => i !== index));
+      return;
+    }
+    setVarDeleteIndex(index);
+  }
+
+  function confirmDeleteVariable() {
+    if (varDeleteIndex === null) return;
+    const variable = variables[varDeleteIndex];
+    setVarDeleteIndex(null);
+    if (!variable?.id) {
+      setVariables((prev) => prev.filter((_, i) => i !== varDeleteIndex));
+      return;
+    }
+    const token = `{{${variable.id}}}`;
+    const nextVars = variables.filter((_, i) => i !== varDeleteIndex);
+
+    function processQuestions(qs: import("@/lib/question").Question[]): import("@/lib/question").Question[] {
+      return qs.map((q) => ({
+        ...q,
+        text: q.text.split(token).join("").trim(),
+        branches: q.branches
+          .filter((b) => !b.condition.value.includes(token))
+          .map((b) => ({ ...b, subQuestions: processQuestions(b.subQuestions) })),
+      }));
+    }
+
+    const nextQuestions = processQuestions(questions);
+    const removedAny = questions.some((q, i) => q.branches.length !== nextQuestions[i].branches.length);
+    setQuestions(nextQuestions);
+    if (removedAny) toast.warning("Some branch conditions were removed because they referenced the deleted variable.");
+    setVariables(nextVars);
   }
 
   // ── Rendering ──
@@ -1017,8 +1119,22 @@ export default function PropertySetupPage() {
                   key={tab}
                   type="button"
                   onClick={() => {
-                    if (activeTab === "Fields" && tab !== "Fields") {
-                      setFields(prev => prev.filter(f => f.id.trim() !== "" || f.label.trim() !== ""));
+                    if (tab === activeTab) return;
+                    if (activeTab === "Fields" && fields.some(f => !f.label.trim())) {
+                      const lastValid = lastValidFieldsRef.current;
+                      const validIds = new Set(lastValid.map(f => f.id));
+                      setFields(fields
+                        .filter(f => f.label.trim() || validIds.has(f.id))
+                        .map(f => !f.label.trim() ? (lastValid.find(s => s.id === f.id) ?? f) : f)
+                      );
+                    }
+                    if (activeTab === "Variables" && variables.some(v => !v.label.trim())) {
+                      const lastValid = lastValidVariablesRef.current;
+                      const validIds = new Set(lastValid.map(v => v.id));
+                      setVariables(variables
+                        .filter(v => v.label.trim() || validIds.has(v.id))
+                        .map(v => !v.label.trim() ? (lastValid.find(s => s.id === v.id) ?? v) : v)
+                      );
                     }
                     setActiveTab(tab);
                   }}
@@ -1065,7 +1181,7 @@ export default function PropertySetupPage() {
                   placeholder="Describe your property — rent, rules, requirements, pet policy, lease length, etc."
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  className="min-h-[120px] w-full resize-none overflow-hidden rounded-lg border border-foreground/10 bg-[#f7f9f8] px-4 py-3 text-sm text-foreground placeholder:text-foreground/70 focus:border-teal-700/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
+                  className="min-h-[560px] w-full resize-none overflow-y-auto rounded-lg border border-foreground/10 bg-[#f7f9f8] px-4 py-3 text-sm text-foreground placeholder:text-foreground/70 focus:border-teal-700/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
                 />
               </div>
             )}
@@ -1082,7 +1198,7 @@ export default function PropertySetupPage() {
 
                 <LandlordFieldsSection
                   fields={fields}
-                  onChange={setFields}
+                  onChange={handleFieldsChange}
                   onBeforeDelete={(field, index) => {
                     requestDeleteField(index);
                     return false;
@@ -1134,7 +1250,15 @@ export default function PropertySetupPage() {
                     <code className="font-mono text-[11px]">{"{{key}}"}</code> syntax.
                   </p>
                 </div>
-                <VariablesSection variables={variables} onChange={setVariables} questionTexts={getAllQuestionTexts(questions)} />
+                <VariablesSection
+                  variables={variables}
+                  onChange={handleVariablesChange}
+                  questionTexts={getAllQuestionTexts(questions)}
+                  onBeforeDelete={(index) => {
+                    requestDeleteVariable(index);
+                    return false;
+                  }}
+                />
               </div>
             )}
 
@@ -1144,6 +1268,7 @@ export default function PropertySetupPage() {
                 <RulesSummary
                   questions={questions}
                   fields={fields}
+                  variables={variables}
                 />
               </div>
             )}
@@ -1568,8 +1693,28 @@ export default function PropertySetupPage() {
             ? questions.filter((q) => q.fieldIds.includes(fields[fieldDeleteIndex]?.id ?? ""))
             : []
         }
+        variables={variables}
         onConfirm={() => confirmDeleteField()}
         onCancel={() => setFieldDeleteIndex(null)}
+      />
+
+      <DeleteVariableDialog
+        open={varDeleteIndex !== null}
+        variable={varDeleteIndex !== null ? (variables[varDeleteIndex] ?? null) : null}
+        referencedQuestions={
+          varDeleteIndex !== null
+            ? getQuestionsWithVarInText(`{{${variables[varDeleteIndex]?.id ?? ""}}}`)
+            : []
+        }
+        conditionReferencedQuestions={
+          varDeleteIndex !== null
+            ? getQuestionsWithVarInCondition(`{{${variables[varDeleteIndex]?.id ?? ""}}}`)
+            : []
+        }
+        variables={variables}
+        fields={fields}
+        onConfirm={() => confirmDeleteVariable()}
+        onCancel={() => setVarDeleteIndex(null)}
       />
       {renameModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">

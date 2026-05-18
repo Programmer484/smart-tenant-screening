@@ -44,7 +44,9 @@ function FieldRow({
   siblings: FieldWithKey[];
 }) {
   const uid = useId();
-  const labelError = field.label ? validateLandlordFieldLabel(field.label) : null;
+  const [touched, setTouched] = useState(false);
+  const emptyLabelError = touched && !field.label.trim() ? "Label is required" : null;
+  const labelError = !emptyLabelError && field.label ? validateLandlordFieldLabel(field.label) : null;
   const duplicateLabelError = field.label.trim() &&
     siblings.filter(f => f.label.trim().toLowerCase() === field.label.trim().toLowerCase()).length > 1
     ? "Field name must be unique" : null;
@@ -103,10 +105,11 @@ function FieldRow({
             value={field.label}
             onChange={(e) => onChange({ ...field, label: e.target.value })}
             onFocus={() => { labelBeforeEdit.current = field.label; }}
-            onBlur={handleLabelBlur}
+            onBlur={() => { setTouched(true); handleLabelBlur(); }}
             placeholder="Question or label for this field…"
-            className={`w-full ${textInputCls}`}
+            className={`w-full ${textInputCls} ${emptyLabelError ? "border-red-400 focus:border-red-400 focus:ring-red-400/20" : ""}`}
           />
+          {emptyLabelError && <p className="mt-1 text-xs text-red-500">{emptyLabelError}</p>}
           {labelError && <p className="mt-1 text-xs text-red-500">{labelError}</p>}
           {duplicateLabelError && <p className="mt-1 text-xs text-red-500">{duplicateLabelError}</p>}
         </div>

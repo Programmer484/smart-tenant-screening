@@ -1,183 +1,171 @@
 # Chatbot Approach
 
-Single source of truth for how the screening chatbot works — architecture, LLM integration, extraction, conversation lifecycle, and landlord controls.
+Single source of truth for the rental screening chatbot: client flow, Claude prompts, extraction, deterministic rule handling, lifecycle, and persistence.
 
-## Design principles
+Primary implementation files:
 
-1. **Positive tenant experience** — conversational, never feels like an interrogation. One question at a time. Answers property questions when the info is available.
-2. **Landlord control** — structured settings for behavioral boundaries plus freeform style/example customisation.
-3. **Deterministic where possible** — rule evaluation, value validation, and conversation lifecycle are handled in code, not by the LLM. The LLM's job is to talk and extract, not to make policy decisions.
+- `app/chat/[slug]/page.tsx`
+- `app/api/chat/route.ts`
+- `lib/anthropic.ts`
 
-## Architecture overview
+## Principles
 
+1. **Tenant-friendly**: ask one conversational question at a time and answer property questions when the description contains the answer.
+2. **Landlord-controlled**: use configured questions, branch rules, links, style guidance, examples, and AI behavior settings.
+3. **Deterministic decisions**: Claude extracts values and writes replies; code validates data, walks the question tree, applies branches, updates counters, sets status, and persists state.
+
+## Request Flow
+
+```text
+Applicant message
+  -> client appends it locally and POSTs full visible history to /api/chat
+  -> server normalizes property, fields, questions, answers, links, AI settings
+  -> server loads session counters/status from Supabase
+  -> Claude extracts field values with extract_fields
+  -> server validates extracted values and merges answers
+  -> server walks the question tree and applies branch rules
+  -> server updates off-topic and qualified follow-up counters
+  -> Claude writes the visible reply with screen_response
+  -> server persists session, messages, counters, and answers
+  -> client renders reply, merges extracted values, and applies terminal status
 ```
-Applicant ──► Chat page (client) ──► /api/chat (server) ──► Claude API (tool_use)
-                  │                        │
-                  │ state:                 │ server-side:
-                  │  offTopicCount         │  validate extractions
-                  │  qualifiedFollowUps    │  evaluate rules
-                  │  clarificationPending  │  enforce lifecycle
-                  │  answers               │  persist to Supabase
-                  │                        │
-                  ◄────────────────────────┘
-                    { reply, extracted, sessionStatus, offTopicWarning }
+
+The client sends full chat history plus property context, field definitions, questions, links, `aiInstructions`, existing answers, `sessionId`, `propertyId`, and variables. New conversations use the same route by sending a synthetic first user message that asks the assistant to greet and start screening.
+
+## Claude Integration
+
+All calls go through `callClaude()` in `lib/anthropic.ts` using `claude-opus-4-7`, Anthropic version `2023-06-01`, `max_tokens: 1024`, a dynamic system prompt, and forced tool use.
+
+The route uses two Claude phases instead of a single freeform response:
+
+1. `extract_fields`: returns `extracted: { fieldId, value }[]` and `message_relevant`.
+2. `screen_response`: returns `reply` and `end_conversation`.
+
+Forced tools keep structured output out of prose, avoid JSON parsing cleanup, and make relevance and lifecycle signals typed.
+
+## Dynamic Prompt
+
+`buildSystemPrompt()` rebuilds the system prompt on every request from:
+
+- property title and description
+- field schema with valid IDs, value kind, options, and current answer state
+- landlord question order and current done/pending status
+- current collection status
+- grounding behavior from `unknownInfoBehavior`
+- next action from the question tree
+- landlord style instructions and examples, when configured
+
+The prompt tells Claude to extract only known fields, avoid inventing property details, follow the question order, ask follow-ups only for missing fields in the current question, and adopt the configured style.
+
+Grounding behavior:
+
+- `deflect`: answer from the property description only; if missing, say the detail is unavailable and suggest contacting the landlord.
+- `ignore`: do not answer unknown property details; redirect to screening.
+
+## Extraction and Validation
+
+Claude may only extract into known field IDs. The server drops unknown IDs and invalid values before updating answers.
+
+| Value kind | Validation |
+| --- | --- |
+| `number` | `Number(value)` is not `NaN` |
+| `boolean` | lowercased value is `true` or `false` |
+| `date` | `Date.parse(value)` is valid |
+| `enum` | value matches a configured option, case-insensitive |
+| `text` | always valid |
+
+Only validated values reach `mergedAnswers`, branch evaluation, persistence, and the client answer state.
+
+## Question Tree and Branches
+
+The server sorts questions by `sort_order` and walks them in code:
+
+1. The first question with any missing target field becomes the next question.
+2. Completed questions evaluate their branches with `evalBranchCondition()`.
+3. The first matching branch controls the outcome.
+4. `reject` marks the applicant rejected.
+5. `followups` recursively walks the branch sub-questions.
+6. No pending question and no rejection means the interview is qualified.
+
+Claude does not decide eligibility. It only sees the result through the next prompt and response context.
+
+## Lifecycle
+
+API statuses are `in_progress`, `qualified`, `completed`, and `rejected`.
+
+```text
+IN_PROGRESS
+  -> REJECTED   when an off-topic limit or reject branch is hit
+  -> QUALIFIED  when all required questions are complete and rules pass
+
+QUALIFIED
+  -> COMPLETED  when follow-up allowance is exhausted, follow-ups are disabled, or the applicant goes off-topic
 ```
 
-Client tracks counters. Server validates, evaluates rules, enforces lifecycle, and persists. The LLM generates replies and extractions via structured tool use.
+`completed` is a successful terminal state. `rejected` is a failed terminal state. In the database, both `qualified` and `completed` are stored as `qualified`; API responses keep them distinct for the chat UI.
 
-## LLM integration: tool use
+## Counters
 
-We use Claude's native `tool_use` instead of asking for JSON inside a freeform response. This gives us schema-enforced structured output.
+Counters are server-authoritative and loaded from the `sessions` table when `sessionId` is present.
 
-### Tool definition: `screen_response`
+Off-topic handling:
+
+- `message_relevant === false` increments `off_topic_count`; relevant messages reset it to `0`.
+- `offTopicLimit` defaults to `3`; `0` means unlimited.
+- Hitting the limit sets `sessionStatus = "rejected"`.
+- Before the limit, the response context asks Claude to redirect back to screening.
+
+Qualified follow-ups:
+
+- Once the stored session is already `qualified`, each turn increments `qualified_follow_up_count`.
+- `qualifiedFollowUps` defaults to `3`; `0` closes immediately on later qualified turns.
+- Reaching the limit sets `sessionStatus = "completed"`.
+
+## Qualified Responses
+
+When the applicant qualifies, the response context tells Claude to say they meet requirements and include configured links:
+
+- `videoUrl`
+- `bookingUrl`
+
+If no links exist, the assistant still acknowledges qualification. When the final qualified response is reached, the context explicitly says it is the final message.
+
+## Persistence and Client Response
+
+When `sessionId` exists, the server upserts `sessions` with listing title, DB status, merged answers, message count, property ID, counters, and `updated_at`. It also inserts the latest user message and assistant reply into `messages`; assistant rows include validated extractions when present.
+
+Supabase write failures are logged but do not block the API response.
+
+The API returns:
 
 ```json
 {
-  "name": "screen_response",
-  "description": "Respond to the applicant and extract any screening field values from their message.",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "reply": {
-        "type": "string",
-        "description": "Your conversational message to the applicant."
-      },
-      "extracted": {
-        "type": "array",
-        "description": "Field values found in the applicant's message. Empty array if none.",
-        "items": {
-          "type": "object",
-          "properties": {
-            "fieldId": { "type": "string" },
-            "value": { "type": "string" }
-          },
-          "required": ["fieldId", "value"]
-        }
-      },
-      "message_relevant": {
-        "type": "boolean",
-        "description": "true if the message is a screening answer OR a property question. false if off-topic."
-      }
-    },
-    "required": ["reply", "extracted", "message_relevant"]
+  "reply": "Assistant message shown to applicant",
+  "extracted": [{ "fieldId": "monthly_income", "value": "4200" }],
+  "sessionStatus": "in_progress",
+  "debugInfo": {
+    "sessionStatus": "in_progress",
+    "offTopicCount": 0,
+    "branchOutcome": null
   }
 }
 ```
 
-Forced with `tool_choice: { type: "tool", name: "screen_response" }`.
+The client appends the reply, merges extracted answers, stores `debugInfo` for `?debug=1`, and disables input for `rejected` or `completed`.
 
-### Why tool use over JSON-in-prompt
+## Landlord Settings
 
-- Schema enforcement: Claude validates the output structure before returning it
-- No regex/JSON.parse cleanup needed
-- Extraction is more reliable because the schema clearly separates reply from data
-- `message_relevant` classification is a typed boolean, not buried in freeform text
+AI behavior lives in `properties.ai_instructions`:
 
-## Value validation
-
-After receiving the tool call result, each extraction is validated in code:
-
-| valueKind | Validation rule |
-|-----------|----------------|
-| number    | `!isNaN(Number(value))` |
-| boolean   | value is "true" or "false" (case-insensitive) |
-| date      | `!isNaN(Date.parse(value))` |
-| enum      | value matches one of the field's `options` (case-insensitive) |
-| text      | always valid |
-
-Invalid extractions are silently dropped — they never reach the rule engine or the client's answers state.
-
-## System prompt structure
-
-The system prompt is built dynamically per request:
-
-1. **Role and property context** — property title and description
-2. **Eligibility requirements** — human-readable rules
-3. **Collected answers** — what we already know
-4. **Still needed fields** — with `collectHint` per field when available
-5. **Behavioral instructions**:
-   - Extraction emphasis: "You MUST extract ALL values matching STILL NEED fields."
-   - Grounding: controlled by `unknownInfoBehavior` setting
-   - One question at a time
-6. **Landlord style instructions** — freeform text (if provided)
-7. **Example conversations** — Q&A pairs (if provided)
-
-No JSON output format instructions — the tool schema handles that.
-
-## Conversation lifecycle
-
-### State machine
-
-```
-                    ┌──────────────────────────┐
-                    │                          │
-                    v                          │
-[start] ──► IN_PROGRESS ──► QUALIFIED ──► COMPLETED
-                │   │            │
-                │   │            └──► COMPLETED (off-topic)
-                │   │
-                │   └──► REJECTED (off-topic >= limit)
-                │
-                └──► CLARIFYING ──► IN_PROGRESS (corrected)
-                         │
-                         └──► REJECTED (still violates)
-```
-
-### Off-topic system
-
-Tracks messages that are neither screening answers nor property questions.
-
-- **Counter**: `offTopicCount` (client state, sent with each request)
-- **Limit**: `offTopicLimit` (landlord setting, default 3, 0 = unlimited)
-- **Trigger**: `message_relevant === false` from the tool call
-- **Behavior**: when count >= limit, override reply with a polite close and set status to `rejected`
-- **Scope**: active during `in_progress` and `qualified` phases
-
-### Rule violation system (two-strike)
-
-Completely independent from off-topic. Triggered by deterministic rule evaluation in code.
-
-- **Strike 1**: `clarificationPending = false` and a violation is found → set status to `clarifying`, override reply with "you may not meet this requirement: [reason]. If incorrect, let us know."
-- **Strike 2**: `clarificationPending = true` and the violation persists → set status to `rejected`, override reply with a final close.
-- **Not configurable** — always two strikes. If a hard rule is violated twice, the conversation ends.
-
-### Qualified phase
-
-Reached when all required fields are collected AND all rules pass.
-
-- **Counter**: `qualifiedFollowUps` (client state)
-- **Limit**: `qualifiedFollowUps` setting (landlord, default 3, 0 = close immediately)
-- **Behavior**: the applicant can ask follow-up questions (on-topic only). Each response increments the counter. When count >= limit OR an off-topic message arrives, override with a closing message and set status to `completed`.
-- `completed` is a terminal state distinct from `rejected` — green banner, not red.
-
-## Landlord behavioral settings
-
-Stored in the `ai_instructions` JSONB column on `properties`. No DB migration needed.
-
-```typescript
+```ts
 type AiInstructions = {
-  style: string;                              // freeform tone/behavior
-  examples: AiExample[];                      // sample Q&A pairs
-  offTopicLimit: number;                      // default 3, 0 = unlimited
-  qualifiedFollowUps: number;                 // default 3, 0 = close immediately
-  unknownInfoBehavior: "deflect" | "ignore";  // default "deflect"
+  style: string;
+  examples: AiExample[];
+  offTopicLimit: number;
+  qualifiedFollowUps: number;
+  unknownInfoBehavior: "deflect" | "ignore";
+  rejectionPrompt?: string;
 };
 ```
 
-### unknownInfoBehavior
-
-- `"deflect"`: "I don't have that information — please contact the landlord directly."
-- `"ignore"`: silently redirect back to screening without acknowledging the question.
-
-### UI
-
-All settings live in the existing "AI Behavior" tab on the property setup page. Structured controls (number inputs, radio buttons) appear alongside the freeform style instructions and example conversations.
-
-## Anti-hallucination
-
-The system prompt includes explicit grounding:
-
-- When `unknownInfoBehavior = "deflect"`: "Only answer property questions using the description above. If the information isn't there, say you don't have that detail and suggest contacting the landlord. Never invent details."
-- When `unknownInfoBehavior = "ignore"`: "Do not answer questions about details not covered in the description above. Redirect the applicant back to the screening questions."
-
-The LLM never has access to information beyond the property description. It cannot hallucinate facts it doesn't have — only fail to admit it doesn't know. The grounding instruction addresses that.
+These settings are edited in the property AI Behavior UI alongside freeform style instructions and example conversations.

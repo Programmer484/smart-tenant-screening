@@ -124,7 +124,7 @@ function walkTree(
 function interpolateVars(text: string, variables: PropertyVariable[]): string {
   if (!variables.length) return text;
   return text.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
-    const v = variables.find((x) => x.key === key.trim());
+    const v = variables.find((x) => x.id === key.trim());
     return v !== undefined ? v.value : `{{${key}}}`;
   });
 }

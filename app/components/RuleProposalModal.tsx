@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import type { LandlordField } from "@/lib/landlord-field";
 import type { AiInstructions, PropertyLinks, PropertyVariable } from "@/lib/property";
 import type { Branch, Question } from "@/lib/question";
+import { resolveVarTokens } from "@/lib/condition-utils";
 
 const OUTCOME_STYLES: Record<string, { label: string; badge: string; border: string; bg: string; text: string }> = {
   reject:   { label: "Reject",        badge: "bg-red-100 text-red-700 border-red-200",    border: "border-red-200",   bg: "bg-red-50/40",   text: "text-red-900/70" },
@@ -16,9 +17,10 @@ const OP_LABEL: Record<string, string> = {
   "==": "is", "!=": "is not", ">": ">", ">=": "≥", "<": "<", "<=": "≤",
 };
 
-function BranchList({ branches, fieldLabel, depth = 0 }: {
+function BranchList({ branches, fieldLabel, variables, depth = 0 }: {
   branches: Branch[];
   fieldLabel: (id: string) => string;
+  variables: PropertyVariable[];
   depth?: number;
 }) {
   if (branches.length === 0) return null;
@@ -26,7 +28,8 @@ function BranchList({ branches, fieldLabel, depth = 0 }: {
     <div className={`flex flex-col gap-1.5 ${depth > 0 ? "ml-4 mt-1.5" : "mt-2"}`}>
       {branches.map((b) => {
         const style = OUTCOME_STYLES[b.outcome] ?? OUTCOME_STYLES.continue;
-        const condLabel = `${fieldLabel(b.condition.fieldId)} ${OP_LABEL[b.condition.operator] ?? b.condition.operator} ${b.condition.value}`;
+        const displayValue = resolveVarTokens(b.condition.value, variables);
+        const condLabel = `${fieldLabel(b.condition.fieldId)} ${OP_LABEL[b.condition.operator] ?? b.condition.operator} ${displayValue}`;
         return (
           <div key={b.id} className={`rounded-lg border ${style.border} ${style.bg} px-2.5 py-1.5`}>
             <div className="flex items-center gap-2 flex-wrap">
@@ -40,13 +43,13 @@ function BranchList({ branches, fieldLabel, depth = 0 }: {
               <div className="mt-1.5 flex flex-col gap-1.5 border-l-2 border-blue-200 pl-2.5">
                 {b.subQuestions.map((sq) => (
                   <div key={sq.id} className="flex flex-col gap-0.5">
-                    <div className="text-xs font-medium text-foreground/80">{sq.text}</div>
+                    <div className="text-xs font-medium text-foreground/80">{resolveVarTokens(sq.text, variables)}</div>
                     <div className="flex flex-wrap gap-1">
                       {sq.fieldIds.map((fid) => (
                         <span key={fid} className="text-[10px] rounded bg-black/5 border border-black/5 px-1.5 py-0.5 text-black/50">{fid}</span>
                       ))}
                     </div>
-                    <BranchList branches={sq.branches} fieldLabel={fieldLabel} depth={depth + 1} />
+                    <BranchList branches={sq.branches} fieldLabel={fieldLabel} variables={variables} depth={depth + 1} />
                   </div>
                 ))}
               </div>
@@ -136,6 +139,11 @@ export function ProposalReviewContent({
 
   const currentVars: PropertyVariable[] = existingVariables ?? [];
   const proposedVars = proposal.variables;
+  // Merged variable set for display: proposed values take precedence over existing
+  const effectiveVars: PropertyVariable[] = [
+    ...currentVars.filter((cv) => !proposedVars?.find((pv) => pv.id === cv.id)),
+    ...(proposedVars ?? []),
+  ];
 
   let newVars: PropertyVariable[] = [];
   let modifiedVars: { old: PropertyVariable; new: PropertyVariable }[] = [];
@@ -143,13 +151,13 @@ export function ProposalReviewContent({
   let hasVariableChanges = false;
 
   if (proposedVars) {
-    newVars = proposedVars.filter((pv) => !currentVars.find((cv) => cv.key === pv.key));
+    newVars = proposedVars.filter((pv) => !currentVars.find((cv) => cv.id === pv.id));
     modifiedVars = proposedVars
-      .map((pv) => ({ new: pv, old: currentVars.find((cv) => cv.key === pv.key) }))
+      .map((pv) => ({ new: pv, old: currentVars.find((cv) => cv.id === pv.id) }))
       .filter((v): v is { old: PropertyVariable; new: PropertyVariable } =>
         v.old != null && (v.old.value !== v.new.value || v.old.label !== v.new.label),
       );
-    deletedVars = currentVars.filter((cv) => !proposedVars.find((pv) => pv.key === cv.key));
+    deletedVars = currentVars.filter((cv) => !proposedVars.find((pv) => pv.id === cv.id));
     hasVariableChanges = newVars.length > 0 || modifiedVars.length > 0 || deletedVars.length > 0;
   }
 
@@ -217,7 +225,7 @@ export function ProposalReviewContent({
                   <div className="flex flex-wrap gap-2">
                     {deletedVars.map((v, i) => (
                       <div key={i} className="rounded border border-red-200 bg-red-50 px-2 py-1 flex flex-col gap-0.5 opacity-70">
-                        <span className="text-[10px] font-medium text-red-900/70 line-through">{v.label || v.key}</span>
+                        <span className="text-[10px] font-medium text-red-900/70 line-through">{v.label || v.id}</span>
                         <span className="text-xs font-mono text-red-800/60 line-through">{v.value}</span>
                       </div>
                     ))}
@@ -232,14 +240,14 @@ export function ProposalReviewContent({
                     {modifiedVars.map((v, i) => (
                       <div key={i} className="flex flex-wrap items-center gap-2 rounded border border-amber-200 bg-amber-50/50 p-2">
                         <div className="flex flex-col gap-0.5 opacity-60 line-through">
-                          <span className="text-[10px] font-medium text-amber-900/70">{v.old.label || v.old.key}</span>
+                          <span className="text-[10px] font-medium text-amber-900/70">{v.old.label || v.old.id}</span>
                           <span className="text-xs font-mono text-amber-800/60">{v.old.value}</span>
                         </div>
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-amber-400">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14m-7-7l7 7-7 7" />
                         </svg>
                         <div className="flex flex-col gap-0.5">
-                          <span className="text-[10px] font-medium text-amber-900">{v.new.label || v.new.key}</span>
+                          <span className="text-[10px] font-medium text-amber-900">{v.new.label || v.new.id}</span>
                           <span className="text-xs font-mono font-medium text-amber-900">{v.new.value}</span>
                         </div>
                       </div>
@@ -254,7 +262,7 @@ export function ProposalReviewContent({
                   <div className="flex flex-wrap gap-2">
                     {newVars.map((v, i) => (
                       <div key={i} className="rounded border border-pink-200 bg-pink-50 px-2 py-1 flex flex-col gap-0.5 shadow-sm">
-                        <span className="text-[10px] font-medium text-pink-900">{v.label || v.key}</span>
+                        <span className="text-[10px] font-medium text-pink-900">{v.label || v.id}</span>
                         <span className="text-xs font-mono font-medium text-pink-900">{v.value}</span>
                       </div>
                     ))}
@@ -271,7 +279,7 @@ export function ProposalReviewContent({
               <ul className="mt-2 flex flex-col gap-2">
                 {deletedQuestions.map((q, i) => (
                   <li key={i} className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm opacity-70">
-                    <div className="text-red-900/70 line-through">{q.text}</div>
+                    <div className="text-red-900/70 line-through">{resolveVarTokens(q.text, effectiveVars)}</div>
                     <div className="mt-1 flex flex-wrap gap-1">
                       {q.fieldIds.map((fid) => (
                         <span key={fid} className="text-[10px] rounded bg-red-100 px-1.5 py-0.5 text-red-800/60 line-through">{fid}</span>
@@ -299,9 +307,9 @@ export function ProposalReviewContent({
                       </div>
                       <div className="p-3 bg-white flex flex-col gap-2 relative">
                         {isUpdate && existing.text !== q.text && (
-                          <div className="text-sm text-foreground/40 line-through mb-1">{existing.text}</div>
+                          <div className="text-sm text-foreground/40 line-through mb-1">{resolveVarTokens(existing.text, effectiveVars)}</div>
                         )}
-                        <div className="text-sm font-medium text-foreground">{q.text}</div>
+                        <div className="text-sm font-medium text-foreground">{resolveVarTokens(q.text, effectiveVars)}</div>
 
                         <div className="flex flex-wrap gap-1">
                           {q.fieldIds.map((fid) => {
@@ -316,7 +324,7 @@ export function ProposalReviewContent({
                         </div>
 
                         {q.branches.length > 0 && (
-                          <BranchList branches={q.branches} fieldLabel={fieldLabel} />
+                          <BranchList branches={q.branches} fieldLabel={fieldLabel} variables={effectiveVars} />
                         )}
                       </div>
                     </li>

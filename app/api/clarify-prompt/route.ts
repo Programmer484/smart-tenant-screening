@@ -58,7 +58,7 @@ export async function POST(req: Request) {
     userPrompt += `\n\nEXISTING QUESTIONS:\n${existingQuestions.map(q => `- ${q.id}: ${q.text}`).join("\n")}`;
   }
   if (variables.length) {
-    userPrompt += `\n\nPROPERTY VARIABLES:\n${variables.map(v => `- {{${v.key}}} (${v.value_kind ?? "text"}) = ${v.value}`).join("\n")}`;
+    userPrompt += `\n\nPROPERTY VARIABLES:\n${variables.map(v => `- {{${v.id}}} (${v.value_kind ?? "text"}) = ${v.value}`).join("\n")}`;
   }
 
   try {

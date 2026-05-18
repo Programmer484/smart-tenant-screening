@@ -49,8 +49,8 @@ function TestCaseDetails({ testCase }: { testCase: LoadedTestCase }) {
           <span className="font-semibold text-gray-700">Property Variables:</span>
           <div className="mt-1 flex flex-wrap gap-1">
             {testCase.propertyVariables.map(v => (
-              <span key={v.key} className="text-[10px] rounded bg-violet-100 border border-violet-200 px-1.5 py-0.5 text-violet-800 font-mono">
-                {`{{${v.key}}}`} = {v.value} ({v.value_kind ?? "text"})
+              <span key={v.id} className="text-[10px] rounded bg-violet-100 border border-violet-200 px-1.5 py-0.5 text-violet-800 font-mono">
+                {`{{${v.id}}}`} = {v.value} ({v.value_kind ?? "text"})
               </span>
             ))}
           </div>

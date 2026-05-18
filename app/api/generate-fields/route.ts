@@ -11,6 +11,7 @@ import type { Branch, BranchOutcome, Question } from "@/lib/question";
 import type { PropertyVariable } from "@/lib/property";
 import { callClaude, ClaudeApiError, extractText, stripCodeFences } from "@/lib/anthropic";
 import { generateId } from "@/lib/id-utils";
+import { sanitizeQuestions } from "@/lib/condition-utils";
 const DEFAULT_MAX_FIELDS_PER_QUESTION = 3;
 
 const DEBUG = process.env.NODE_ENV !== "production";
@@ -142,7 +143,7 @@ GENERATION ATTEMPT: 2 (retry). A previous pass referenced field IDs that were no
 
   if (variables.length > 0) {
     prompt += `\n\nPROPERTY VARIABLES (landlord-defined values you may reference in branch condition "value" fields):`;
-    prompt += `\n${variables.map((v) => `  - {{${v.key}}} — ${v.label} (${v.value_kind ?? "text"}) = "${v.value}"`).join("\n")}`;
+    prompt += `\n${variables.map((v) => `  - {{${v.id}}} — ${v.label} (${v.value_kind ?? "text"}) = "${v.value}"`).join("\n")}`;
     prompt += `\n\nEXPRESSION SYNTAX (date and number fields only — use instead of hardcoding values):
   {{key}}        → the variable's current value
   {{key}} + N   → value plus N (days for dates, numeric offset for numbers)
@@ -430,9 +431,9 @@ export async function POST(req: Request) {
     ? rec.maxFieldsPerQuestion
     : DEFAULT_MAX_FIELDS_PER_QUESTION;
 
-  const existingFields: { id: string; label: string; value_kind: string }[] = Array.isArray(rec.existingFields)
+  const existingFields: { id: string; label: string; value_kind: string; options?: string[] }[] = Array.isArray(rec.existingFields)
     ? (rec.existingFields as unknown[]).filter(
-        (x): x is { id: string; label: string; value_kind: string } =>
+        (x): x is { id: string; label: string; value_kind: string; options?: string[] } =>
           typeof x === "object" && x !== null && typeof (x as any).id === "string" && typeof (x as any).label === "string"
       )
     : [];
@@ -448,7 +449,7 @@ export async function POST(req: Request) {
     ? (rec.variables as unknown[]).filter(
         (x): x is PropertyVariable =>
           typeof x === "object" && x !== null &&
-          typeof (x as any).key === "string" &&
+          typeof (x as any).id === "string" &&
           typeof (x as any).value === "string"
       )
     : [];
@@ -606,11 +607,23 @@ export async function POST(req: Request) {
       } satisfies GenerateFieldsResponse, { status: 422 });
     }
 
+    // Apply the same condition checks the FlowEditor enforces for users
+    const allFields: LandlordField[] = [
+      ...existingFields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind as LandlordField["value_kind"], options: f.options })),
+      ...parsed.newFields,
+    ];
+    const sanitizedQuestions = sanitizeQuestions(
+      parsed.questions,
+      allFields,
+      variables,
+      (qid, bid, reason) => log(`dropped branch ${bid} on ${qid}: ${reason}`),
+    );
+
     log("success");
     return NextResponse.json({
       ok: true,
       newFields: parsed.newFields,
-      questions: parsed.questions,
+      questions: sanitizedQuestions,
       deletedQuestionIds: parsed.deletedQuestionIds,
     } satisfies GenerateFieldsResponse);
   } catch (err) {

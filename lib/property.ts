@@ -51,7 +51,6 @@ export function resolveAiInstructions(
 
 export type PropertyVariable = {
   id: string;
-  key: string;
   label: string;
   value: string;
   value_kind?: FieldValueKind;

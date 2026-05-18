@@ -2,7 +2,8 @@
 
 import type { LandlordField } from "@/lib/landlord-field";
 import type { Question, Branch } from "@/lib/question";
-import { describeCondition } from "@/lib/condition-utils";
+import type { PropertyVariable } from "@/lib/property";
+import { describeCondition, resolveVarTokens } from "@/lib/condition-utils";
 
 type BranchRule = {
   questionText: string;
@@ -11,7 +12,7 @@ type BranchRule = {
   customMessage?: string;
 };
 
-function extractBranchRules(questions: Question[], fields: LandlordField[]): BranchRule[] {
+function extractBranchRules(questions: Question[], fields: LandlordField[], variables: PropertyVariable[]): BranchRule[] {
   const result: BranchRule[] = [];
 
   function walk(qs: Question[]) {
@@ -19,8 +20,8 @@ function extractBranchRules(questions: Question[], fields: LandlordField[]): Bra
       for (const branch of q.branches) {
         if (branch.outcome === "reject") {
           result.push({
-            questionText: q.text || "(untitled question)",
-            condition: describeCondition(branch.condition, fields),
+            questionText: resolveVarTokens(q.text || "(untitled question)", variables),
+            condition: describeCondition(branch.condition, fields, variables),
             outcome: branch.outcome,
             customMessage: (branch as Branch & { customMessage?: string }).customMessage,
           });
@@ -39,11 +40,13 @@ function extractBranchRules(questions: Question[], fields: LandlordField[]): Bra
 export default function RulesSummary({
   questions,
   fields,
+  variables = [],
 }: {
   questions: Question[];
   fields: LandlordField[];
+  variables?: PropertyVariable[];
 }) {
-  const branchRules = extractBranchRules(questions, fields);
+  const branchRules = extractBranchRules(questions, fields, variables);
 
   return (
     <div className="flex flex-col gap-3">

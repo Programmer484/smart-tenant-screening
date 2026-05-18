@@ -187,7 +187,7 @@ export const testCases: TestCase[] = [
     description: "Tests that the AI uses variable expressions ({{availability_date}} ± 30) instead of hardcoded dates for the move-in window branches.",
     prompt: "The unit is available on {{availability_date}}. We're flexible — applicants can move in up to 30 days before or after that date. If they want to move in more than 30 days before, ask if they can wait. If more than 30 days after, ask if they can move in sooner.",
     propertyVariables: [
-      { id: "v_avail", key: "availability_date", label: "Availability Date", value: "2024-09-01", value_kind: "date" },
+      { id: "availability_date", label: "Availability Date", value: "2024-09-01", value_kind: "date" },
     ],
     requirements: [
       "Must collect a date field for desired_move_in_date",

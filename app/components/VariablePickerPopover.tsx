@@ -48,7 +48,7 @@ export function VariablePickerPopover({
     return variables.filter(
       (v) =>
         v.label.toLowerCase().includes(q) ||
-        v.key.toLowerCase().includes(q) ||
+        v.id.toLowerCase().includes(q) ||
         v.value.toLowerCase().includes(q),
     );
   }, [variables, query]);
@@ -89,10 +89,10 @@ export function VariablePickerPopover({
             <button
               key={v.id}
               type="button"
-              onClick={() => { onInsert(`{{${v.key}}}`); onClose(); }}
+              onClick={() => { onInsert(`{{${v.id}}}`); onClose(); }}
               className="flex w-full flex-col items-start gap-0.5 rounded-md px-3 py-2 text-left transition-colors hover:bg-black/5"
             >
-              <span className="font-mono text-[11px] font-semibold text-indigo-700">{`{{${v.key}}}`}</span>
+              <span className="font-mono text-[11px] font-semibold text-indigo-700">{`{{${v.id}}}`}</span>
               <div className="flex w-full items-center justify-between gap-2">
                 <span className="text-xs text-foreground/55">{v.label}</span>
                 {v.value && (

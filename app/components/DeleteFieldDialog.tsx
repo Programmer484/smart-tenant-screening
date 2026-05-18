@@ -3,17 +3,21 @@
 import { useEffect, useRef } from "react";
 import type { LandlordField } from "@/lib/landlord-field";
 import type { Question } from "@/lib/question";
+import type { PropertyVariable } from "@/lib/property";
+import { resolveVarTokens } from "@/lib/condition-utils";
 
 export function DeleteFieldDialog({
   open,
   field,
   referencedQuestions,
+  variables = [],
   onConfirm,
   onCancel,
 }: {
   open: boolean;
   field: LandlordField | null;
   referencedQuestions: Question[];
+  variables?: PropertyVariable[];
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -66,7 +70,8 @@ export function DeleteFieldDialog({
             </p>
             <ul className="flex flex-col gap-1.5">
               {referencedQuestions.map((q) => {
-                const text = q.text.length > 110 ? q.text.slice(0, 110) + "…" : q.text;
+                const resolved = resolveVarTokens(q.text, variables);
+                const text = resolved.length > 110 ? resolved.slice(0, 110) + "…" : resolved;
                 const remaining = q.fieldIds.length - 1;
                 return (
                   <li

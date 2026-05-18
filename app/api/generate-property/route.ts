@@ -11,6 +11,7 @@ import type { Branch, BranchOutcome, Question } from "@/lib/question";
 import type { PropertyVariable, PropertyLinks, AiInstructions } from "@/lib/property";
 import { OPERATORS_BY_KIND } from "@/lib/landlord-rule";
 import { callClaude, ClaudeApiError, extractText, stripCodeFences } from "@/lib/anthropic";
+import { sanitizeQuestions } from "@/lib/condition-utils";
 
 const DEFAULT_MAX_FIELDS_PER_QUESTION = 3;
 const DEBUG = process.env.NODE_ENV !== "production";
@@ -340,6 +341,23 @@ Implement this plan and return the required JSON schema. Use the "notesToUser" a
         result.newFields = [...result.newFields, ...repairFields];
       }
     }
+
+    // Apply the same condition checks the FlowEditor enforces for users
+    const allFields: LandlordField[] = [
+      ...existingFields.map((f: any) => ({
+        id: f.id,
+        label: f.label,
+        value_kind: f.value_kind as LandlordField["value_kind"],
+        options: f.options,
+      })),
+      ...result.newFields,
+    ];
+    result.questions = sanitizeQuestions(
+      result.questions,
+      allFields,
+      variables,
+      (qid, bid, reason) => log(`dropped branch ${bid} on ${qid}: ${reason}`),
+    );
 
     return NextResponse.json({ ok: true, debugPlan: expandedPlan, ...result });
 
