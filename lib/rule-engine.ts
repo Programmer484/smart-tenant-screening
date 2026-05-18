@@ -94,6 +94,7 @@ function satisfies(
 export type RuleViolation = {
   rule: LandlordRule;
   message?: string;
+  customMessage?: string;
 };
 
 /**
@@ -154,7 +155,7 @@ export function evaluateRules(
     if (rule.kind !== "reject") continue;
     const isMet = evaluateRule(rule, fields, answers, variables);
     if (isMet === true) {
-      violations.push({ rule });
+      violations.push({ rule, customMessage: rule.customMessage });
     }
   }
 

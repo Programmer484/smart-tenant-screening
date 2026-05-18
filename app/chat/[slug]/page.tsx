@@ -7,8 +7,8 @@ import { ConfirmDialog } from "@/app/components/ConfirmDialog";
 import type { PropertyRecord, PropertyLinks, AiInstructions, PropertyVariable } from "@/lib/property";
 import { resolveAiInstructions, DEFAULT_LINKS } from "@/lib/property";
 import type { LandlordField } from "@/lib/landlord-field";
-import { normalizeRulesList, type LandlordRule } from "@/lib/landlord-rule";
 import type { Question } from "@/lib/question";
+import { validatePublishableProperty } from "@/lib/property-validation";
 
 type Role = "assistant" | "user";
 type Extraction = { fieldId: string; value: string };
@@ -21,7 +21,6 @@ type ChatConfig = {
   description: string;
   fields: LandlordField[];
   questions: Question[];
-  rules: LandlordRule[];
   links: PropertyLinks;
   aiInstructions: AiInstructions;
   variables: PropertyVariable[];
@@ -68,7 +67,7 @@ export default function ChatPage() {
   const [debugOpen, setDebugOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [pageReady, setPageReady] = useState(false);
-  const [debugInfo, setDebugInfo] = useState<any>(null);
+  const [debugInfo, setDebugInfo] = useState<Record<string, unknown> | null>(null);
 
   const [showDebug] = useState(() =>
     typeof window !== "undefined" &&
@@ -85,7 +84,6 @@ export default function ChatPage() {
   // Lifecycle state (server-authoritative via session DB)
   const [rejected, setRejected] = useState(false);
   const [completed, setCompleted] = useState(false);
-  const [qualified, setQualified] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -119,7 +117,6 @@ export default function ChatPage() {
       description: cfg.description,
       fields: cfg.fields,
       questions: cfg.questions,
-      rules: cfg.rules,
       links: cfg.links,
       aiInstructions: cfg.aiInstructions,
       variables: cfg.variables,
@@ -132,9 +129,17 @@ export default function ChatPage() {
 
   async function fetchGreeting(cfg: ChatConfig, sid: string, initialAnswers: Record<string, string>) {
     try {
-      const prompt = tenantName
-        ? `(new conversation — the applicant's name is ${tenantName}. greet them by name and ask the next screening question)`
-        : `(new conversation — very concisely introduce yourself and ask the first screening question)`;
+      const { greetingWithName, greetingWithoutName } = cfg.aiInstructions;
+      let prompt: string;
+      if (tenantName) {
+        const instruction = greetingWithName
+          ? greetingWithName.replace(/\{name\}/gi, tenantName)
+          : `greet them by name and ask the next screening question`;
+        prompt = `(new conversation — the applicant's name is ${tenantName}. ${instruction})`;
+      } else {
+        const instruction = greetingWithoutName || `very concisely introduce yourself and ask the first screening question`;
+        prompt = `(new conversation — ${instruction})`;
+      }
 
       const res = await fetch("/api/chat", {
         method: "POST",
@@ -170,17 +175,49 @@ export default function ChatPage() {
       }
 
       const p = propRes.data as PropertyRecord;
+      let isPreview = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("preview") === "1";
+      
+      if (isPreview) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user || user.id !== p.user_id) {
+          isPreview = false;
+        }
+      }
+      
+      if (!isPreview && (p.status ?? "draft") !== "published") {
+        setMessages([{
+          id: "init", role: "assistant",
+          text: "This listing is not accepting applications yet.",
+        }]);
+        setPageReady(true);
+        return;
+      }
+
+      const sourceData = (!isPreview && p.status === "published" && p.published_state) 
+        ? { ...p, ...p.published_state } 
+        : p;
+
+      const chatFields = (sourceData.fields as LandlordField[]) ?? [];
+      const chatQuestions = (sourceData.questions as Question[]) ?? [];
+
+      if (validatePublishableProperty({ fields: chatFields, questions: chatQuestions }).length > 0) {
+        setMessages([{
+          id: "init", role: "assistant",
+          text: "This listing is not properly configured. Please contact the property manager.",
+        }]);
+        setPageReady(true);
+        return;
+      }
 
       const cfg: ChatConfig = {
         id: p.id,
-        title: p.title,
-        description: p.description,
-        fields: (p.fields as LandlordField[]) ?? [],
-        questions: (p.questions as Question[]) ?? [],
-        rules: normalizeRulesList(p.rules),
-        links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) },
-        aiInstructions: resolveAiInstructions(p.ai_instructions),
-        variables: (p.variables as PropertyVariable[]) ?? [],
+        title: sourceData.title,
+        description: sourceData.description,
+        fields: chatFields,
+        questions: chatQuestions,
+        links: { ...DEFAULT_LINKS, ...(sourceData.links as Partial<PropertyLinks>) },
+        aiInstructions: resolveAiInstructions(sourceData.ai_instructions),
+        variables: (sourceData.variables as PropertyVariable[]) ?? [],
       };
       setConfig(cfg);
 
@@ -190,7 +227,7 @@ export default function ChatPage() {
       if (!existing) setCookie(cn, sid);
       setSessionId(sid);
 
-      let initialAnswers: Record<string, string> = {};
+      const initialAnswers: Record<string, string> = {};
       if (tenantName) {
         const nameField = cfg.fields.find(f => f.id.toLowerCase().includes("name") || f.label.toLowerCase().includes("name"));
         if (nameField) {
@@ -220,7 +257,6 @@ export default function ChatPage() {
 
           if (data.status === "rejected") setRejected(true);
           if (data.status === "qualified") {
-            setQualified(true);
             setCompleted(true);
           }
           if (!data.messages?.length) {
@@ -290,7 +326,7 @@ export default function ChatPage() {
         reply?: string;
         extracted?: Extraction[];
         sessionStatus?: string;
-        debugInfo?: any;
+        debugInfo?: Record<string, unknown>;
       };
 
       const extracted = data.extracted ?? [];
@@ -318,9 +354,6 @@ export default function ChatPage() {
         setRejected(true);
       } else if (status === "completed") {
         setCompleted(true);
-        setQualified(true);
-      } else if (status === "qualified") {
-        setQualified(true);
       }
 
     } catch {
@@ -349,7 +382,7 @@ export default function ChatPage() {
     setCookie(cn, newSid);
     setSessionId(newSid);
 
-    let initialAnswers: Record<string, string> = {};
+    const initialAnswers: Record<string, string> = {};
     if (tenantName) {
       const nameField = config.fields.find(f => f.id.toLowerCase().includes("name") || f.label.toLowerCase().includes("name"));
       if (nameField) {
@@ -361,7 +394,6 @@ export default function ChatPage() {
     setAnswers(initialAnswers);
     setRejected(false);
     setCompleted(false);
-    setQualified(false);
     setInput("");
 
     await fetchGreeting(config, newSid, initialAnswers);
@@ -471,15 +503,23 @@ export default function ChatPage() {
               <p className="font-mono text-[11px] text-[#1a2e2a]/40">No answers yet.</p>
             ) : (
               <pre className="font-mono text-[11px] leading-relaxed text-[#1a2e2a]/70 whitespace-pre-wrap break-words">
-                {JSON.stringify(answers, null, 2)}
+                {JSON.stringify(
+                  Object.fromEntries(
+                    Object.entries(answers).map(([id, val]) => {
+                      const label = config?.fields.find((f) => f.id === id)?.label ?? id;
+                      return [label, val];
+                    })
+                  ),
+                  null, 2
+                )}
               </pre>
             )}
           </div>
-          {debugInfo && (
+          {!!debugInfo && (
             <div>
               <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[#1a2e2a]/40">Rule Engine & DB state</p>
               <pre className="font-mono text-[11px] leading-relaxed text-red-800/80 bg-red-100/50 p-2 rounded whitespace-pre-wrap break-words">
-                {JSON.stringify(debugInfo, null, 2)}
+                {JSON.stringify(debugInfo, null, 2) ?? ""}
               </pre>
             </div>
           )}

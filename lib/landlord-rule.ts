@@ -57,6 +57,8 @@ export type LandlordRule = {
   targetFieldId?: string;
   /** Evaluated with AND logic */
   conditions: RuleCondition[];
+  /** Optional custom message when rule is violated */
+  customMessage?: string;
 };
 
 /**
@@ -84,6 +86,7 @@ export function normalizeLandlordRule(raw: unknown): LandlordRule | null {
     kind,
     targetFieldId: typeof r.targetFieldId === "string" ? r.targetFieldId : undefined,
     conditions: r.conditions as LandlordRule["conditions"],
+    customMessage: typeof r.customMessage === "string" ? r.customMessage : undefined,
   };
 }
 

@@ -19,6 +19,16 @@ export type LandlordField = {
   collect_hint?: string;
   /** Required when value_kind is "enum": allowed choices for the applicant */
   options?: string[];
+  /** Permanent fields cannot be deleted or reordered below position 0 */
+  permanent?: boolean;
+};
+
+/** The built-in name field — always present on every property */
+export const NAME_FIELD: LandlordField = {
+  id: "name",
+  label: "Full Name",
+  value_kind: "text",
+  permanent: true,
 };
 
 const ID_RE = /^[a-z][a-z0-9_]*$/;

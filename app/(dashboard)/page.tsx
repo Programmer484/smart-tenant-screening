@@ -14,7 +14,7 @@ export default async function PropertiesPage() {
 
   const { data: properties } = await supabase
     .from("properties")
-    .select("id,title,description,fields,questions,rules,created_at,updated_at")
+    .select("id,title,description,status,fields,questions,created_at,updated_at")
     .order("created_at", { ascending: false });
 
   const list = (properties as PropertyRecord[] | null) ?? [];
@@ -37,9 +37,9 @@ export default async function PropertiesPage() {
       ) : (
         <div className="space-y-3">
           {list.map((p) => {
-            const fieldCount = ((p as any).fields ?? []).length;
-            const questionCount = ((p as any).questions ?? []).length;
-            const ruleCount = p.rules?.length ?? 0;
+            const fieldCount = (p.fields ?? []).length;
+            const questionCount = (p.questions ?? []).length;
+            const status = p.status ?? "draft";
             const desc = (p.description ?? "").trim();
             const updatedAt = p.updated_at ?? p.created_at;
             const relTime = updatedAt ? timeAgo(updatedAt) : null;
@@ -55,17 +55,25 @@ export default async function PropertiesPage() {
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0 flex-1">
-                      <h2 className="text-base font-semibold text-[#1a2e2a] group-hover:text-teal-800 transition-colors">
-                        {p.title}
-                      </h2>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-base font-semibold text-[#1a2e2a] transition-colors group-hover:text-teal-800">
+                          {p.title}
+                        </h2>
+                        <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                          status === "published"
+                            ? "bg-teal-100 text-teal-800"
+                            : "bg-amber-100 text-amber-800"
+                        }`}>
+                          {status}
+                        </span>
+                      </div>
                       {desc && (
                         <p className="mt-1.5 line-clamp-1 text-sm text-[#1a2e2a]/45">
                           {desc}
                         </p>
                       )}
                       <p className="mt-2 text-xs text-[#1a2e2a]/40">
-                        {fieldCount} field{fieldCount !== 1 ? "s" : ""} · {questionCount} question{questionCount !== 1 ? "s" : ""} ·{" "}
-                        {ruleCount} rule{ruleCount !== 1 ? "s" : ""}
+                        {fieldCount} field{fieldCount !== 1 ? "s" : ""} · {questionCount} question{questionCount !== 1 ? "s" : ""}
                         {relTime && (
                           <span className="text-[#1a2e2a]/25"> · updated {relTime}</span>
                         )}

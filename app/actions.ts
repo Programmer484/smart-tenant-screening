@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
+import { NAME_FIELD } from "@/lib/landlord-field";
 
 export async function createNewProperty(formData: FormData) {
   const title = (formData.get("title") as string) || "New Property";
@@ -13,7 +14,7 @@ export async function createNewProperty(formData: FormData) {
 
   const { data, error } = await supabase
     .from("properties")
-    .insert({ user_id: user.id, title, slug })
+    .insert({ user_id: user.id, title, slug, status: "draft", fields: [NAME_FIELD] })
     .select("id")
     .single();
 

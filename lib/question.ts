@@ -4,13 +4,14 @@ export type BranchCondition = {
   value: string;
 };
 
-export type BranchOutcome = "continue" | "followups" | "review" | "reject";
+export type BranchOutcome = "continue" | "followups" | "reject";
 
 export type Branch = {
   id: string;
   condition: BranchCondition;
   outcome: BranchOutcome;
   subQuestions: Question[];
+  customMessage?: string;
 };
 
 /**

@@ -40,7 +40,17 @@ export default async function DashboardLayout({
               </svg>
               All Applicants
             </Link>
-
+            <Link
+              href="/docs"
+              className="flex items-center gap-1.5 rounded-lg border border-black/10 bg-white px-3 py-1.5 text-sm text-[#1a2e2a]/70 transition-colors hover:bg-[#f7f9f8]"
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+                <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.3" />
+                <path d="M6.5 6.25C6.5 5.42 7.17 4.75 8 4.75s1.5.67 1.5 1.5c0 .72-.48 1.32-1.13 1.47C7.97 7.83 7.75 8.16 7.75 8.5V9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                <circle cx="8" cy="11" r="0.75" fill="currentColor" />
+              </svg>
+              Help & Docs
+            </Link>
             <form action={signOut}>
               <button
                 type="submit"

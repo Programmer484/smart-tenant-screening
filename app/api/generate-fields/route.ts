@@ -10,6 +10,7 @@ import {
 import type { Branch, BranchOutcome, Question } from "@/lib/question";
 import type { PropertyVariable } from "@/lib/property";
 import { callClaude, ClaudeApiError, extractText, stripCodeFences } from "@/lib/anthropic";
+import { generateId } from "@/lib/id-utils";
 const DEFAULT_MAX_FIELDS_PER_QUESTION = 3;
 
 const DEBUG = process.env.NODE_ENV !== "production";
@@ -49,7 +50,7 @@ function repairJson(raw: string): string {
   return s;
 }
 
-const VALID_OUTCOMES: BranchOutcome[] = ["continue", "followups", "review", "reject"];
+const VALID_OUTCOMES: BranchOutcome[] = ["continue", "followups", "reject"];
 
 export function buildSystemPrompt(
   existingFields: { id: string; label: string; value_kind: string }[],
@@ -100,7 +101,6 @@ BRANCHES:
 - Outcomes:
     "continue"  — normal flow (rarely needed; omit unless necessary)
     "followups" — ask sub-questions when condition matches (e.g. collect pet details only if has_pets == true)
-    "review"    — flag for manual landlord review (borderline or ambiguous case)
     "reject"    — immediately reject applicant (clear policy violation)
 - subQuestions applies only to "followups". Sub-questions follow the same structure as top-level questions.
 - Most questions need NO branches. Keep branches array empty ([]) unless the answer truly changes routing.
@@ -261,10 +261,6 @@ function parseGeneratedQuestion(v: unknown): Question | null {
     sort_order: 0,
     branches,
   };
-}
-
-function generateId() {
-  return Math.random().toString(36).slice(2, 9);
 }
 
 function knownFieldIdSet(

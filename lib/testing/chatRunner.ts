@@ -22,6 +22,20 @@ export type ChatTestResult = {
   finalAnswers?: Record<string, string>;
 };
 
+type ChatRouteResponse = {
+  error?: string;
+  reply?: string;
+  extracted?: unknown;
+  sessionStatus?: string;
+  debugInfo?: unknown;
+};
+
+function isExtraction(value: unknown): value is { fieldId: string; value: string } {
+  if (typeof value !== "object" || value === null) return false;
+  const item = value as Record<string, unknown>;
+  return typeof item.fieldId === "string" && typeof item.value === "string";
+}
+
 function buildBody(
   testCase: ChatTestCase,
   answers: Record<string, string>,
@@ -33,7 +47,6 @@ function buildBody(
     description: p.description ?? "",
     fields: p.fields,
     questions: p.questions,
-    rules: p.rules ?? [],
     variables: p.variables ?? [],
     aiInstructions: p.aiInstructions ?? {},
     answers,
@@ -64,7 +77,7 @@ export async function runChatTest(
       });
 
       const res = await chatRoute(req);
-      const data = await res.json();
+      const data = (await res.json()) as ChatRouteResponse;
 
       if (data.error) {
         throw new Error(data.error);
@@ -72,12 +85,7 @@ export async function runChatTest(
 
       const reply = typeof data.reply === "string" ? data.reply : "";
       const extracted: { fieldId: string; value: string }[] = Array.isArray(data.extracted)
-        ? data.extracted.filter(
-            (x: unknown): x is { fieldId: string; value: string } =>
-              typeof x === "object" && x !== null &&
-              typeof (x as any).fieldId === "string" &&
-              typeof (x as any).value === "string",
-          )
+        ? data.extracted.filter(isExtraction)
         : [];
       const sessionStatus = typeof data.sessionStatus === "string" ? data.sessionStatus : "unknown";
 

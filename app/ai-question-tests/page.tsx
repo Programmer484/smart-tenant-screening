@@ -11,9 +11,6 @@ type LoadedTestCase = Omit<TestCase, "mockOutput"> & { mockOutput: TestCase["moc
 
 function proposalFromOutput(output: TestCase["mockOutput"]): Proposal {
   return {
-    newRules: output?.newRules ?? [],
-    modifiedRules: output?.modifiedRules ?? [],
-    deletedRuleIds: output?.deletedRuleIds ?? [],
     newFields: output?.newFields ?? [],
     proposedQuestions: output?.questions ?? [],
     deletedQuestionIds: output?.deletedQuestionIds ?? [],
@@ -341,7 +338,6 @@ export default function AiQuestionTestsPage() {
                           <div className="rounded-xl border border-gray-200 overflow-hidden shadow-sm">
                             <ProposalReviewContent
                               proposal={mockProposal}
-                              existingRules={[]}
                               existingQuestions={existingQuestionsForProposal}
                               existingFields={testCase.existingFields ?? []}
                               showActions={false}
@@ -356,9 +352,6 @@ export default function AiQuestionTestsPage() {
 
               // Full result view
               const mappedProposal: Proposal = {
-                newRules: r.output?.newRules ?? [],
-                modifiedRules: r.output?.modifiedRules ?? [],
-                deletedRuleIds: r.output?.deletedRuleIds ?? [],
                 newFields: r.output?.newFields ?? [],
                 proposedQuestions: r.output?.questions ?? [],
                 deletedQuestionIds: r.output?.deletedQuestionIds ?? [],
@@ -505,7 +498,6 @@ export default function AiQuestionTestsPage() {
                         <div className="rounded-xl border border-gray-200 overflow-hidden shadow-sm">
                           <ProposalReviewContent
                             proposal={mappedProposal}
-                            existingRules={[]}
                             existingQuestions={existingQuestionsForProposal}
                             existingFields={testCase.existingFields ?? []}
                             showActions={false}

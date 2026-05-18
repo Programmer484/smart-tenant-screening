@@ -2,44 +2,25 @@
 
 import React, { useState, useEffect, useRef, useId } from "react";
 import {
-  FIELD_VALUE_KINDS,
   FieldValueKind,
   LandlordField,
   validateLandlordFieldId,
   validateLandlordFieldLabel,
   validateEnumOptions,
 } from "@/lib/landlord-field";
-import type { LandlordRule } from "@/lib/landlord-rule";
-import { generateId } from "./RuleBuilder";
+import { generateId } from "@/lib/id-utils";
+import {
+  ValueKindSelect,
+  InlineDeleteButton,
+  LockBadge,
+  textInputCls,
+} from "@/app/components/field-primitives";
 
-const KIND_LABELS: Record<FieldValueKind, string> = {
-  text: "Text",
-  number: "Number",
-  date: "Date",
-  boolean: "Yes/No",
-  enum: "Options",
-};
+type FieldWithKey = LandlordField & { _key: string };
 
-function labelToFieldId(label: string): string {
-  return label
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .trim()
-    .replace(/\s+/g, "_")
-    .slice(0, 40);
+function emptyField(): FieldWithKey {
+  return { _key: generateId(), id: generateId(), label: "", value_kind: "text" };
 }
-
-function emptyField(): LandlordField & { _key: string; _isNew?: boolean } {
-  return {
-    _key: generateId(),
-    id: "",
-    label: "",
-    value_kind: "text",
-    _isNew: true,
-  } as any;
-}
-
-type FieldWithKey = LandlordField & { _key: string; _isNew?: boolean };
 
 function FieldRow({
   field,
@@ -50,7 +31,7 @@ function FieldRow({
   onMoveUp,
   onMoveDown,
   action,
-  allFields,
+  siblings,
 }: {
   field: FieldWithKey;
   index: number;
@@ -60,142 +41,96 @@ function FieldRow({
   onMoveUp: () => void;
   onMoveDown: () => void;
   action?: React.ReactNode;
-  allFields?: LandlordField[];
+  siblings: FieldWithKey[];
 }) {
   const uid = useId();
-  const idError = field.id ? validateLandlordFieldId(field.id) : null;
   const labelError = field.label ? validateLandlordFieldLabel(field.label) : null;
-  const duplicateLabelError = (field.label.trim() && (allFields?.filter(f => f.label.trim().toLowerCase() === field.label.trim().toLowerCase()).length ?? 0) > 1) 
+  const duplicateLabelError = field.label.trim() &&
+    siblings.filter(f => f.label.trim().toLowerCase() === field.label.trim().toLowerCase()).length > 1
     ? "Field name must be unique" : null;
-  const duplicateIdError = (field.id.trim() && (allFields?.filter(f => f.id.trim() === field.id.trim()).length ?? 0) > 1)
-    ? "Field ID must be unique" : null;
-  const enumOptionsError =
-    field.value_kind === "enum"
-      ? validateEnumOptions(field.options)
-      : null;
+  const enumOptionsError = field.value_kind === "enum" ? validateEnumOptions(field.options) : null;
 
-  const isLocked = !field._isNew;
-  function handleLabelChange(newLabel: string) {
-    const prevAutoId = labelToFieldId(field.label);
-    const updated: FieldWithKey = { ...field, label: newLabel };
-    if (!isLocked && (!field.id || field.id === prevAutoId)) {
-      updated.id = labelToFieldId(newLabel);
+  const labelBeforeEdit = useRef(field.label);
+
+  function handleLabelBlur() {
+    if (duplicateLabelError) {
+      onChange({ ...field, label: labelBeforeEdit.current });
+    } else {
+      labelBeforeEdit.current = field.label;
     }
-    onChange(updated);
   }
 
   return (
     <div className="flex gap-3 rounded-xl border border-foreground/10 bg-background p-3 shadow-sm">
       {/* Reorder controls */}
       <div className="flex flex-col items-center gap-0.5 pt-1 text-foreground/30">
-        <button
-          type="button"
-          onClick={onMoveUp}
-          disabled={index === 0}
-          aria-label="Move up"
-          className="rounded p-0.5 transition-colors hover:text-foreground/70 disabled:opacity-20 disabled:cursor-not-allowed"
-        >
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M2 8l4-4 4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        {field.permanent ? (
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="opacity-20 mt-0.5" aria-hidden>
+            <rect x="1" y="5" width="10" height="2" rx="1" fill="currentColor" />
           </svg>
-        </button>
-        <svg width="10" height="14" viewBox="0 0 10 14" fill="none" className="opacity-40">
-          <circle cx="3" cy="3" r="1" fill="currentColor" />
-          <circle cx="7" cy="3" r="1" fill="currentColor" />
-          <circle cx="3" cy="7" r="1" fill="currentColor" />
-          <circle cx="7" cy="7" r="1" fill="currentColor" />
-          <circle cx="3" cy="11" r="1" fill="currentColor" />
-          <circle cx="7" cy="11" r="1" fill="currentColor" />
-        </svg>
-        <button
-          type="button"
-          onClick={onMoveDown}
-          disabled={index === total - 1}
-          aria-label="Move down"
-          className="rounded p-0.5 transition-colors hover:text-foreground/70 disabled:opacity-20 disabled:cursor-not-allowed"
-        >
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
+        ) : (
+          <>
+            <button type="button" onClick={onMoveUp} disabled={index === 0} aria-label="Move up"
+              className="rounded p-0.5 transition-colors hover:text-foreground/70 disabled:opacity-20 disabled:cursor-not-allowed">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path d="M2 8l4-4 4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <svg width="10" height="14" viewBox="0 0 10 14" fill="none" className="opacity-40">
+              <circle cx="3" cy="3" r="1" fill="currentColor" />
+              <circle cx="7" cy="3" r="1" fill="currentColor" />
+              <circle cx="3" cy="7" r="1" fill="currentColor" />
+              <circle cx="7" cy="7" r="1" fill="currentColor" />
+              <circle cx="3" cy="11" r="1" fill="currentColor" />
+              <circle cx="7" cy="11" r="1" fill="currentColor" />
+            </svg>
+            <button type="button" onClick={onMoveDown} disabled={index === total - 1} aria-label="Move down"
+              className="rounded p-0.5 transition-colors hover:text-foreground/70 disabled:opacity-20 disabled:cursor-not-allowed">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+          </>
+        )}
       </div>
 
       {/* Field content */}
       <div className="flex flex-1 flex-col gap-2">
-        {/* Label */}
         <div>
           <input
             id={`${uid}-label`}
             type="text"
             value={field.label}
-            onChange={(e) => handleLabelChange(e.target.value)}
+            onChange={(e) => onChange({ ...field, label: e.target.value })}
+            onFocus={() => { labelBeforeEdit.current = field.label; }}
+            onBlur={handleLabelBlur}
             placeholder="Question or label for this field…"
-            className="w-full rounded-lg border border-foreground/10 bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-foreground/35 focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/15"
+            className={`w-full ${textInputCls}`}
           />
-          {labelError && (
-            <p className="mt-1 text-xs text-red-500">{labelError}</p>
-          )}
-          {duplicateLabelError && (
-            <p className="mt-1 text-xs text-red-500">{duplicateLabelError}</p>
-          )}
+          {labelError && <p className="mt-1 text-xs text-red-500">{labelError}</p>}
+          {duplicateLabelError && <p className="mt-1 text-xs text-red-500">{duplicateLabelError}</p>}
         </div>
 
-        {/* Compact meta row: ID · Type · Action */}
         <div className="flex flex-wrap items-center gap-2">
-          <input
-            id={`${uid}-id`}
-            type="text"
-            value={field.id}
-            readOnly={isLocked}
-            onChange={(e) => {
-              if (!isLocked) onChange({ ...field, id: e.target.value });
-            }}
-            placeholder="field_id"
-            title={isLocked ? "Field ID cannot be changed once created" : ""}
-            className={`w-40 rounded-md border px-2 py-1 font-mono text-xs focus:outline-none ${
-              isLocked
-                ? "bg-foreground/5 border-transparent text-foreground/40 cursor-not-allowed"
-                : "bg-foreground/[0.02] border-foreground/8 text-foreground/60 placeholder:text-foreground/25 focus:border-foreground/20"
-            }`}
-          />
-          <select
-            id={`${uid}-kind`}
+          <ValueKindSelect
             value={field.value_kind}
-            onChange={(e) => {
-              const k = e.target.value as FieldValueKind;
+            disabled={!!field.permanent}
+            onChange={(k) => {
               const next: FieldWithKey = { ...field, value_kind: k };
               if (k === "enum") {
-                next.options =
-                  field.options?.length ? [...field.options] : ["", ""];
+                next.options = field.options?.length ? [...field.options] : ["", ""];
               } else {
                 delete next.options;
               }
               onChange(next);
             }}
-            className="rounded-md border border-foreground/8 bg-foreground/[0.02] px-2 py-1 text-xs text-foreground/60 focus:border-foreground/20 focus:outline-none"
-          >
-            {FIELD_VALUE_KINDS.map((k) => (
-              <option key={k} value={k}>
-                {KIND_LABELS[k]}
-              </option>
-            ))}
-          </select>
-
+          />
           {action && <div className="ml-auto">{action}</div>}
         </div>
 
-        {idError && (
-          <p className="text-xs text-red-500">{idError}</p>
-        )}
-        {duplicateIdError && (
-          <p className="text-xs text-red-500">{duplicateIdError}</p>
-        )}
-
-        {field.value_kind === "enum" ? (
+        {field.value_kind === "enum" && (
           <div className="flex flex-col gap-2 pt-1">
-            <span className="text-xs text-foreground/50">
-              Answer choices (at least two)
-            </span>
+            <span className="text-xs text-foreground/50">Answer choices (at least two)</span>
             <ul className="flex list-none flex-col gap-2 p-0">
               {(field.options ?? [""]).map((opt, optIdx) => (
                 <li key={optIdx} className="flex gap-2">
@@ -208,19 +143,14 @@ function FieldRow({
                       onChange({ ...field, options: opts });
                     }}
                     placeholder={`Choice ${optIdx + 1}`}
-                    className="min-w-0 flex-1 rounded-lg border border-foreground/10 bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-foreground/35 focus:border-foreground/25 focus:outline-none focus:ring-1 focus:ring-foreground/15"
+                    className={`min-w-0 flex-1 ${textInputCls}`}
                   />
                   <button
                     type="button"
                     disabled={(field.options ?? []).length <= 1}
                     onClick={() => {
-                      const opts = (field.options ?? []).filter(
-                        (_, j) => j !== optIdx,
-                      );
-                      onChange({
-                        ...field,
-                        options: opts.length ? opts : [""],
-                      });
+                      const opts = (field.options ?? []).filter((_, j) => j !== optIdx);
+                      onChange({ ...field, options: opts.length ? opts : [""] });
                     }}
                     className="shrink-0 rounded-lg px-2 text-xs text-foreground/45 transition-colors hover:text-red-500 disabled:opacity-25"
                   >
@@ -231,35 +161,21 @@ function FieldRow({
             </ul>
             <button
               type="button"
-              onClick={() =>
-                onChange({
-                  ...field,
-                  options: [...(field.options ?? []), ""],
-                })
-              }
+              onClick={() => onChange({ ...field, options: [...(field.options ?? []), ""] })}
               className="self-start text-xs text-foreground/50 underline-offset-2 hover:text-foreground/75 hover:underline"
             >
               + Add choice
             </button>
-            {enumOptionsError ? (
-              <p className="text-xs text-red-500">{enumOptionsError}</p>
-            ) : null}
+            {enumOptionsError && <p className="text-xs text-red-500">{enumOptionsError}</p>}
           </div>
-        ) : null}
-
+        )}
       </div>
 
-      {/* Delete */}
-      <button
-        type="button"
-        onClick={onDelete}
-        aria-label="Delete field"
-        className="mt-1 shrink-0 rounded-lg p-1.5 text-foreground/25 transition-colors hover:bg-red-50 hover:text-red-500"
-      >
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-          <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        </svg>
-      </button>
+      {field.permanent ? (
+        <LockBadge />
+      ) : (
+        <InlineDeleteButton onClick={onDelete} ariaLabel="Delete field" />
+      )}
     </div>
   );
 }
@@ -269,18 +185,11 @@ export default function LandlordFieldsSection({
   onChange,
   fieldAction,
   onBeforeDelete,
-  allFields,
-  rules: _rules,
-  onRulesChange: _onRulesChange,
 }: {
   fields: LandlordField[];
   onChange: (fields: LandlordField[]) => void;
   fieldAction?: (field: LandlordField) => React.ReactNode;
-  /** Return false to cancel delete (e.g. parent will update `fields` after async confirm). */
   onBeforeDelete?: (field: LandlordField, index: number) => boolean;
-  allFields?: LandlordField[];
-  rules?: LandlordRule[];
-  onRulesChange?: (rules: LandlordRule[]) => void;
 }) {
   function fingerprint(f: LandlordField[]) {
     return f.map((x) => x.id).join("\0") + "\0" + f.length;
@@ -314,12 +223,14 @@ export default function LandlordFieldsSection({
 
   function handleDelete(index: number) {
     const field = rows[index];
+    if (field?.permanent) return;
     if (field && onBeforeDelete && !onBeforeDelete(field, index)) return;
     update(rows.filter((_, i) => i !== index));
   }
 
   function handleMoveUp(index: number) {
     if (index === 0) return;
+    if (rows[index - 1]?.permanent) return;
     const next = [...rows];
     [next[index - 1], next[index]] = [next[index], next[index - 1]];
     update(next);
@@ -330,10 +241,6 @@ export default function LandlordFieldsSection({
     const next = [...rows];
     [next[index], next[index + 1]] = [next[index + 1], next[index]];
     update(next);
-  }
-
-  function handleAdd() {
-    update([...rows, emptyField()]);
   }
 
   return (
@@ -351,15 +258,14 @@ export default function LandlordFieldsSection({
               onMoveUp={() => handleMoveUp(i)}
               onMoveDown={() => handleMoveDown(i)}
               action={fieldAction && field.id ? fieldAction(field) : undefined}
-              allFields={allFields}
+              siblings={rows}
             />
           ))}
         </div>
       )}
-
       <button
         type="button"
-        onClick={handleAdd}
+        onClick={() => update([...rows, emptyField()])}
         className="self-start rounded-lg border border-dashed border-foreground/20 px-4 py-2 text-sm text-foreground/50 transition-colors hover:border-foreground/40 hover:text-foreground/70"
       >
         + Add field

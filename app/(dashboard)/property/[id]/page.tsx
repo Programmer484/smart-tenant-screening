@@ -5,49 +5,45 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { toast } from "sonner";
 import { createClient } from "@/lib/supabase/client";
-import type { PropertyRecord, PropertyLinks, AiInstructions, PropertyVariable } from "@/lib/property";
+import type { PropertyRecord, PropertyLinks, AiInstructions, PropertyVariable, PropertyStatus } from "@/lib/property";
 import { DEFAULT_AI_INSTRUCTIONS, DEFAULT_LINKS, resolveAiInstructions } from "@/lib/property";
+import { validatePublishableProperty, type PublishValidationIssue } from "@/lib/property-validation";
 import type { LandlordField } from "@/lib/landlord-field";
-import {
-  isFieldVisibilityRule,
-  normalizeRulesList,
-  type LandlordRule,
-} from "@/lib/landlord-rule";
 import type { Question } from "@/lib/question";
-import RulesSection from "@/app/components/RulesSection";
+import RulesSummary from "@/app/components/RulesSummary";
 import FlowEditor from "@/app/components/FlowEditor";
 import { PropertyEditorSkeleton } from "@/app/components/Skeleton";
 import { ConfirmDialog } from "@/app/components/ConfirmDialog";
+import { DeleteFieldDialog } from "@/app/components/DeleteFieldDialog";
 import { ShareLinkModal } from "@/app/components/ShareLinkModal";
 import { RuleProposalModal, type Proposal } from "@/app/components/RuleProposalModal";
 import LandlordFieldsSection from "@/app/components/LandlordFieldsSection";
 import VariablesSection from "@/app/components/VariablesSection";
 import QuestionMentionTextarea from "@/app/components/QuestionMentionTextarea";
+import { generateId } from "@/lib/id-utils";
+import {
+  validateLandlordFieldId,
+  validateLandlordFieldLabel,
+  validateEnumOptions,
+  NAME_FIELD,
+} from "@/lib/landlord-field";
 
-const TABS = ["Details", "Fields", "Questions", "Variables", "Rules", "Links", "AI Behavior"] as const;
+const TABS = ["Details", "Fields", "Questions", "Variables", "Rules", "Links", "AI Behavior", "Test"] as const;
 type Tab = (typeof TABS)[number];
 
-function generateId() {
-  return Math.random().toString(36).slice(2, 9);
-}
-
-function migrateRules(rawRules: unknown[]): LandlordRule[] {
-  return normalizeRulesList(rawRules);
-}
-
-function ruleReferencesField(r: LandlordRule, fieldId: string): boolean {
-  if (r.targetFieldId === fieldId) return true;
-  return r.conditions.some((c) => c.fieldId === fieldId);
-}
-
-function summarizeRule(r: LandlordRule): string {
-  const conds = r.conditions.map((c) => `${c.fieldId} ${c.operator} ${c.value}`).join("; ");
-  if (isFieldVisibilityRule(r)) {
-    const tgt = r.targetFieldId ? ` (field: ${r.targetFieldId})` : "";
-    return `Show field${tgt} when: ${conds}`;
-  }
-  if (r.kind === "reject") return `Reject: ${conds}`;
-  return `Require: ${conds}`;
+function getFieldDeleteDescription(fields: LandlordField[], questions: Question[], idx: number | null): string {
+  if (idx === null) return "";
+  const field = fields[idx];
+  if (!field?.id) return "";
+  const qs = questions.filter((q) => q.fieldIds.includes(field.id));
+  const label = field.label || field.id;
+  if (qs.length === 0) return 'Delete field "' + label + '" (' + field.id + ')?';
+  const qList = qs.map((q) => {
+    const t = q.text.length > 120 ? q.text.slice(0, 120) + "..." : q.text;
+    return "- " + t;
+  }).join("\n");
+  const s = qs.length !== 1 ? "s" : "";
+  return 'Field "' + label + '" (' + field.id + ') is referenced by ' + qs.length + " question" + s + ":\n\n" + qList + "\n\nThose questions will have this field unlinked. Any question left with no fields will be removed.";
 }
 
 // ─── Main Page ──────────────────────────────────────────────────────
@@ -61,9 +57,11 @@ export default function PropertySetupPage() {
   const [fields, setFields] = useState<LandlordField[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [variables, setVariables] = useState<PropertyVariable[]>([]);
-  const [rules, setRules] = useState<LandlordRule[]>([]);
   const [links, setLinks] = useState<PropertyLinks>(DEFAULT_LINKS);
   const [aiInstructions, setAiInstructions] = useState<AiInstructions>(DEFAULT_AI_INSTRUCTIONS);
+  const [status, setStatus] = useState<PropertyStatus>("draft");
+  const [publishIssues, setPublishIssues] = useState<PublishValidationIssue[]>([]);
+  const [externalFocus, setExternalFocus] = useState<{ id: string; target: { questionId?: string; branchId?: string } } | null>(null);
   const [slug, setSlug] = useState("");
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [renameModalOpen, setRenameModalOpen] = useState(false);
@@ -71,8 +69,10 @@ export default function PropertySetupPage() {
   const [renamePending, setRenamePending] = useState(false);
   const renameDialogRef = useRef<HTMLDialogElement>(null);
 
+  const [publishedStateStr, setPublishedStateStr] = useState<string | null>(null);
+
   const [activeTab, setActiveTab] = useState<Tab>("Details");
-  const [loadingPhase, setLoadingPhase] = useState<null | "questions" | "rules">(null);
+  const [loadingPhase, setLoadingPhase] = useState<null | "questions">(null);
   const [saving, setSaving] = useState(false);
   const [pageLoading, setPageLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -81,7 +81,6 @@ export default function PropertySetupPage() {
   const [showSaved, setShowSaved] = useState(false);
   const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savedIndicatorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const saveRef = useRef<(_?: Partial<PropertyRecord>) => Promise<{error?: any} | void>>(async () => {});
   const serializedStateRef = useRef("");
   const hasLoadedRef = useRef(false);
   const [questionsPrompt, setQuestionsPrompt] = useState("");
@@ -94,9 +93,21 @@ export default function PropertySetupPage() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [rulesPrompt, setRulesPrompt] = useState("");
   const [ruleProposal, setRuleProposal] = useState<Proposal | null>(null);
   const [fieldDeleteIndex, setFieldDeleteIndex] = useState<number | null>(null);
+
+  // Test tab state
+  type TestOutcome = "qualified" | "rejected" | "review" | "in_progress";
+  type TestResult = {
+    messages: { role: "user" | "assistant"; content: string }[];
+    answers: Record<string, string>;
+    outcome: TestOutcome;
+    violations: string[];
+  };
+  const [testScenario, setTestScenario] = useState("");
+  const [testResult, setTestResult] = useState<TestResult | null>(null);
+  const [testLoading, setTestLoading] = useState(false);
+  const [testSaved, setTestSaved] = useState(false);
 
   const descRef = useRef<HTMLTextAreaElement>(null);
 
@@ -124,11 +135,12 @@ export default function PropertySetupPage() {
 
       const p = propRes.data as PropertyRecord;
       setTitle(p.title);
+      setStatus(p.status ?? "draft");
       setDescription(p.description);
-      setFields((p.fields as LandlordField[]) ?? []);
+      const loadedFields = (p.fields as LandlordField[]) ?? [];
+      const hasNameField = loadedFields.some((f) => f.id === NAME_FIELD.id);
+      setFields(hasNameField ? loadedFields : [NAME_FIELD, ...loadedFields]);
       setQuestions(((p.questions as Question[]) ?? []).map((q) => ({ ...q, branches: q.branches ?? [] })));
-      const migratedRules = migrateRules((p.rules as any[]) ?? []);
-      setRules(migratedRules);
       setVariables((p.variables as PropertyVariable[]) ?? []);
       setLinks({ ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) });
       setAiInstructions(resolveAiInstructions(p.ai_instructions));
@@ -136,13 +148,14 @@ export default function PropertySetupPage() {
 
       lastSavedRef.current = JSON.stringify({
         title: p.title, description: p.description,
+        status: p.status ?? "draft",
         fields: (p.fields as LandlordField[]) ?? [],
         questions: ((p.questions as Question[]) ?? []).map((q) => ({ ...q, branches: q.branches ?? [] })),
-        rules: migratedRules,
         variables: (p.variables as PropertyVariable[]) ?? [],
         links: { ...DEFAULT_LINKS, ...(p.links as Partial<PropertyLinks>) },
         aiInstructions: resolveAiInstructions(p.ai_instructions),
       });
+      setPublishedStateStr(p.published_state ? JSON.stringify(p.published_state) : null);
       hasLoadedRef.current = true;
       setPageLoading(false);
     }
@@ -152,9 +165,9 @@ export default function PropertySetupPage() {
   // ── Dirty tracking ──
   useEffect(() => {
     if (pageLoading) return;
-    const current = JSON.stringify({ title, description, fields, questions, variables, rules, links, aiInstructions });
+    const current = JSON.stringify({ title, status, description, fields, questions, variables, links, aiInstructions });
     setDirty(current !== lastSavedRef.current);
-  }, [title, description, fields, questions, variables, rules, links, aiInstructions, pageLoading, lastSavedRef]);
+  }, [title, status, description, fields, questions, variables, links, aiInstructions, pageLoading, lastSavedRef]);
 
   useEffect(() => {
     function onBeforeUnload(e: BeforeUnloadEvent) {
@@ -196,18 +209,17 @@ export default function PropertySetupPage() {
       
       const titleToSave = overrides?.title !== undefined ? overrides.title : title;
       const newTitle = titleToSave.trim() || "New Property";
-      const newSlug = newTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+      const newStatus = overrides?.status ?? status;
 
       const { error } = await supabase
         .from("properties")
         .update({
           title: newTitle,
-          slug: newSlug,
+          status: newStatus,
           description: description.trim(),
           fields,
           questions,
           variables,
-          rules,
           links,
           ai_instructions: aiInstructions,
           updated_at: new Date().toISOString(),
@@ -228,8 +240,8 @@ export default function PropertySetupPage() {
         if (overrides?.title !== undefined) {
           setTitle(newTitle);
         }
-        setSlug(newSlug);
-        lastSavedRef.current = JSON.stringify({ title: newTitle, description, fields, questions, variables, rules, links, aiInstructions });
+        setStatus(newStatus);
+        lastSavedRef.current = JSON.stringify({ title: newTitle, status: newStatus, description, fields, questions, variables, links, aiInstructions });
         setDirty(false);
         if (savedIndicatorTimerRef.current) clearTimeout(savedIndicatorTimerRef.current);
         setShowSaved(true);
@@ -237,13 +249,14 @@ export default function PropertySetupPage() {
           setShowSaved(false);
           savedIndicatorTimerRef.current = null;
         }, 2000);
+        if (overrides && 'published_state' in overrides) {
+          setPublishedStateStr(overrides.published_state ? JSON.stringify(overrides.published_state) : null);
+        }
         return { error: null };
       }
     },
-    [id, title, description, fields, questions, variables, rules, links, aiInstructions, supabase], // eslint-disable-line react-hooks/exhaustive-deps
+    [id, title, status, description, fields, questions, variables, links, aiInstructions, supabase, lastSavedRef],
   );
-
-  saveRef.current = save;
 
   function cancelAutosaveTimer() {
     if (autosaveTimerRef.current) {
@@ -257,10 +270,10 @@ export default function PropertySetupPage() {
     if (!hasLoadedRef.current) return;
     if (serializedStateRef.current === lastSavedRef.current) return;
     await save();
-  }, [save]);
+  }, [save, lastSavedRef]);
 
   serializedStateRef.current = JSON.stringify({
-    title, description, fields, questions, variables, rules, links, aiInstructions,
+    title, status, description, fields, questions, variables, links, aiInstructions,
   });
 
   // Debounced autosave (2s after last edit while dirty)
@@ -279,11 +292,11 @@ export default function PropertySetupPage() {
     };
   }, [
     title,
+    status,
     description,
     fields,
     questions,
     variables,
-    rules,
     links,
     aiInstructions,
     pageLoading,
@@ -306,17 +319,15 @@ export default function PropertySetupPage() {
       try {
         const state = JSON.parse(serializedStateRef.current);
         const finalTitle = (state.title ?? "").trim() || "New Property";
-        const finalSlug = finalTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
         void supabase
           .from("properties")
           .update({
             title: finalTitle,
-            slug: finalSlug,
+            status: state.status,
             description: (state.description ?? "").trim(),
             fields: state.fields,
             questions: state.questions,
             variables: state.variables,
-            rules: state.rules,
             links: state.links,
             ai_instructions: state.aiInstructions,
             updated_at: new Date().toISOString(),
@@ -326,6 +337,37 @@ export default function PropertySetupPage() {
       } catch { /* serialization error — skip */ }
     };
   }, [id, supabase]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function publishProperty() {
+    const issues = validatePublishableProperty({ fields, questions });
+    setPublishIssues(issues);
+    if (issues.length > 0) {
+      toast.error(`Fix ${issues.length} issue${issues.length === 1 ? "" : "s"} before publishing`);
+      return;
+    }
+    const res = await save({ 
+      status: "published",
+      published_state: {
+        title,
+        description,
+        fields,
+        questions,
+        links,
+        ai_instructions: aiInstructions,
+        variables,
+      } as any
+    });
+    if (!res?.error) {
+      toast.success("Property published");
+    }
+  }
+
+  async function unpublishProperty() {
+    const res = await save({ status: "draft", published_state: null } as any);
+    if (!res?.error) {
+      toast.success("Property moved to drafts");
+    }
+  }
 
   // ── Generate questions with prompt ──
   async function startRecording() {
@@ -400,7 +442,7 @@ export default function PropertySetupPage() {
   }
 
   async function runGeneration(description: string): Promise<boolean> {
-    const res = await fetch("/api/generate-fields", {
+    const res = await fetch("/api/generate-property", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -408,25 +450,14 @@ export default function PropertySetupPage() {
         existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
         existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
         variables,
+        links,
+        aiInstructions,
       }),
     });
     const data = await res.json();
 
-    // Two failure shapes: structured `ok: false` errors (validation / orphan fields)
-    // and bare `{ error }` payloads (e.g. ClaudeApiError catch path with non-2xx HTTP status).
     if (data.ok === false || (!res.ok && data.error)) {
-      if (data.raw) {
-        console.group("[generate-fields] AI returned bad output");
-        console.log("Error:", data.error);
-        console.log("Raw AI response:\n", data.raw);
-        console.groupEnd();
-      }
-      if (data.violations?.length) {
-        const names = data.violations.map((v: { text: string }) => `"${v.text}"`).join(", ");
-        toast.error(`${data.error}: ${names}`);
-      } else {
-        toast.error(data.error ?? "Generation failed");
-      }
+      toast.error(data.error ?? "Generation failed");
       return false;
     }
 
@@ -434,19 +465,33 @@ export default function PropertySetupPage() {
     const proposedQuestions: Question[] = data.questions ?? [];
     const deletedQuestionIds: string[] = data.deletedQuestionIds ?? [];
 
-    if (proposedFields.length === 0 && proposedQuestions.length === 0 && deletedQuestionIds.length === 0) {
+    if (
+      proposedFields.length === 0 &&
+      proposedQuestions.length === 0 &&
+      deletedQuestionIds.length === 0 &&
+      !data.variables &&
+      !data.links &&
+      !data.aiInstructions
+    ) {
       toast.info("No new items to add — AI found everything is covered.");
       return true;
     }
 
+    if (data.debugPlan) {
+      console.log("=== AI EXPANSION PLAN (DEBUG) ===");
+      console.log(data.debugPlan);
+      console.log("=================================");
+    }
+
     setRuleProposal({
-      newRules: [],
-      modifiedRules: [],
-      deletedRuleIds: [],
       newFields: proposedFields,
       proposedQuestions,
       deletedQuestionIds,
-    });
+      variables: data.variables,
+      links: data.links,
+      aiInstructions: data.aiInstructions,
+      notesToUser: data.notesToUser,
+    } as Proposal);
     return true;
   }
 
@@ -570,151 +615,159 @@ export default function PropertySetupPage() {
     }
   }
 
-  // ── Generate rules with prompt ──
-  async function handleGenerateRules(prompt: string) {
-    if (!prompt.trim()) {
-      toast.error("Enter a prompt describing what rules to generate");
-      return;
-    }
-    if (fields.length === 0) {
-      toast.error("Add fields first so rules can reference them");
-      return;
-    }
+  async function handleRunTest() {
+    if (!testScenario.trim()) return;
+    setTestLoading(true);
+    setTestResult(null);
+    setTestSaved(false);
     try {
-      setLoadingPhase("rules");
-      const res = await fetch("/api/generate-rules", {
+      const res = await fetch("/api/test-scenario", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scenario: testScenario, title, description, fields, questions, variables }),
+      });
+      const data = await res.json();
+      if (!res.ok) { toast.error(data.error ?? "Test generation failed"); return; }
+      setTestResult(data);
+    } catch {
+      toast.error("Test generation failed — please try again");
+    } finally {
+      setTestLoading(false);
+    }
+  }
+
+  async function handleSaveTest() {
+    if (!testResult) return;
+    try {
+      const res = await fetch("/api/test-scenario/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          description: prompt,
-          fields,
-          existingRules: rules,
+          propertyId: id,
+          title,
+          scenario: testScenario,
+          outcome: testResult.outcome,
+          answers: testResult.answers,
+          messages: testResult.messages,
         }),
       });
-      const data = (await res.json()) as {
-        newRules?: LandlordRule[];
-        modifiedRules?: LandlordRule[];
-        deletedRuleIds?: string[];
-        newFields?: LandlordField[];
-      };
-
-      const newRules = migrateRules(data.newRules ?? []);
-      const modifiedRules = migrateRules(data.modifiedRules ?? []);
-      const deletedRuleIds = data.deletedRuleIds ?? [];
-      const newFields = data.newFields ?? [];
-
-      if (newFields.length > 0) {
-        toast.info("Analyzing missing fields...");
-        const newFieldsDesc = newFields.map(f => `${f.label || f.id} (type: ${f.value_kind})`).join(", ");
-        const res2 = await fetch("/api/generate-fields", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-             description: `We are building new screening rules that require these NEW fields (not in the schema yet): ${newFieldsDesc}. We need interview questions to collect them.\n\nIMPORTANT: Look at EXISTING QUESTIONS in the system context. If any existing question is on the same topic as these fields (e.g. house rules, smoking, pets, drugs, income — or one combined "policies" style question), UPDATE that question: keep its id, add the new field id(s) to fieldIds, and rewrite the question text so it naturally asks for everything in one place. Only add a brand-new question if no existing question is a good fit. Prefer merging related checks into one question when it stays readable.`,
-             existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind })),
-             existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
-          })
-        });
-        const data2 = await res2.json();
-
-        if (data2.ok === false) {
-          if (data2.raw) {
-            console.group("[generate-fields] AI returned bad output (from rule flow)");
-            console.log("Error:", data2.error);
-            console.log("Raw AI response:\n", data2.raw);
-            console.groupEnd();
-          }
-          toast.error(data2.error ?? "Failed to generate questions for new fields");
-        }
-
-        setRuleProposal({
-           newRules,
-           modifiedRules,
-           deletedRuleIds,
-           newFields,
-           proposedQuestions: data2.ok !== false ? (data2.questions || []) : [],
-           deletedQuestionIds: data2.ok !== false ? (data2.deletedQuestionIds || []) : [],
-        });
-        return;
-      }
-
-      setRuleProposal({
-        newRules,
-        modifiedRules,
-        deletedRuleIds,
-        newFields: [],
-        proposedQuestions: [],
-        deletedQuestionIds: [],
-      });
-
-    } catch (err) {
-      console.error("[generateRules]", err);
-      toast.error("Rule generation failed — please try again");
-    } finally {
-      setLoadingPhase(null);
+      const data = await res.json();
+      if (!res.ok) { toast.error(data.error ?? "Save failed"); return; }
+      setTestSaved(true);
+      toast.success("Test session saved");
+    } catch {
+      toast.error("Save failed — please try again");
     }
+  }
+
+  function getAllQuestionTexts(qs: Question[]): string[] {
+    const texts: string[] = [];
+    for (const q of qs) {
+      texts.push(q.text);
+      for (const b of q.branches) {
+        texts.push(...getAllQuestionTexts(b.subQuestions));
+      }
+    }
+    return texts;
   }
 
   function applyProposal() {
     if (!ruleProposal) return;
 
-    // 1. Add new fields
+    // 1. Add new fields — skip any with invalid/duplicate IDs or labels
     if (ruleProposal.newFields.length > 0) {
-      setFields((prev) => [...prev, ...ruleProposal.newFields.map(f => ({ ...f, _isNew: true, _clientId: generateId() }) as unknown as LandlordField)]);
+      setFields((prev) => {
+        const existingIds = new Set(prev.map((f) => f.id));
+        const existingLabels = new Set(prev.map((f) => f.label.toLowerCase()));
+        const validNew = ruleProposal.newFields.filter((f) => {
+          if (!f.id || validateLandlordFieldId(f.id)) return false;
+          if (!f.label || validateLandlordFieldLabel(f.label)) return false;
+          if (existingIds.has(f.id)) return false;
+          if (existingLabels.has(f.label.toLowerCase())) return false;
+          if (f.value_kind === "enum" && validateEnumOptions(f.options)) return false;
+          return true;
+        });
+        return [...prev, ...validNew.map((f) => ({ ...f, _isNew: true, _clientId: generateId() }) as unknown as LandlordField)];
+      });
     }
 
-    // 2. Delete questions -> replace/append questions -> renumber
+    // 2. Delete questions (recursively) -> upsert -> renumber
     if (ruleProposal.proposedQuestions.length > 0 || ruleProposal.deletedQuestionIds.length > 0) {
       setQuestions((prev) => {
-        let next = [...prev];
+        const deleteSet = new Set(ruleProposal.deletedQuestionIds);
 
-        // Delete
-        if (ruleProposal.deletedQuestionIds.length > 0) {
-          const deleteSet = new Set(ruleProposal.deletedQuestionIds);
-          next = next.filter((q) => !deleteSet.has(q.id));
+        function deleteFromTree(qs: Question[]): Question[] {
+          return qs
+            .filter((q) => !deleteSet.has(q.id))
+            .map((q) => ({
+              ...q,
+              branches: q.branches.map((b) => ({
+                ...b,
+                subQuestions: deleteFromTree(b.subQuestions),
+              })),
+            }));
         }
 
-        // Upsert: replace text + fieldIds for existing, collect truly new
+        let next = deleteSet.size > 0 ? deleteFromTree(prev) : [...prev];
+
+        // Upsert: update existing questions, preserving branches unless AI provides new ones
         const newQs: Question[] = [];
         for (const pq of ruleProposal.proposedQuestions) {
           const idx = next.findIndex((q) => q.id === pq.id);
           if (idx >= 0) {
-            next[idx] = { ...next[idx], text: pq.text, fieldIds: pq.fieldIds };
+            next[idx] = {
+              ...next[idx],
+              text: pq.text,
+              fieldIds: pq.fieldIds,
+              branches: pq.branches?.length ? pq.branches : next[idx].branches,
+            };
           } else {
             newQs.push({ ...pq, branches: pq.branches ?? [] });
           }
         }
 
-        if (newQs.length > 0) {
-          next = [...next, ...newQs];
-        }
-
-        // Renumber sort_order
+        if (newQs.length > 0) next = [...next, ...newQs];
         return next.map((q, i) => ({ ...q, sort_order: i }));
       });
     }
 
-    // 3. Delete / modify / add rules
-    setRules((prev) => {
-      let next = [...prev];
-      if (ruleProposal.deletedRuleIds.length > 0) {
-        next = next.filter((r) => !ruleProposal.deletedRuleIds.includes(r.id));
+    // 3. Variables — merge: keep existing referenced ones the AI omitted, upsert the rest
+    if (Array.isArray(ruleProposal.variables)) {
+      setVariables((prev) => {
+        const allTexts = getAllQuestionTexts(questions);
+        const proposalKeys = new Set(ruleProposal.variables!.map((v) => v.key));
+        const protected_ = prev.filter((v) => {
+          if (proposalKeys.has(v.key)) return false;
+          return allTexts.some((t) => t.includes(`{{${v.key}}}`));
+        });
+        return [...protected_, ...ruleProposal.variables!];
+      });
+    }
+
+    // 5. Links
+    if (ruleProposal.links) {
+      setLinks((prev) => ({ ...prev, ...ruleProposal.links }));
+    }
+
+    // 6. AI instructions — sanitize numeric fields before applying
+    if (ruleProposal.aiInstructions) {
+      const ai = { ...ruleProposal.aiInstructions };
+      if (typeof ai.offTopicLimit === "number") {
+        ai.offTopicLimit = Math.max(0, Math.round(ai.offTopicLimit));
+      } else {
+        delete ai.offTopicLimit;
       }
-      for (const mod of ruleProposal.modifiedRules) {
-        const idx = next.findIndex((r) => r.id === mod.id);
-        if (idx >= 0) next[idx] = mod;
+      if (typeof ai.qualifiedFollowUps === "number") {
+        ai.qualifiedFollowUps = Math.max(0, Math.round(ai.qualifiedFollowUps));
+      } else {
+        delete ai.qualifiedFollowUps;
       }
-      if (ruleProposal.newRules.length > 0) {
-        next = [...next, ...ruleProposal.newRules];
-      }
-      return next;
-    });
+      setAiInstructions((prev) => ({ ...prev, ...ai }));
+    }
 
     const parts: string[] = [];
-    const rc = ruleProposal.newRules.length + ruleProposal.modifiedRules.length + ruleProposal.deletedRuleIds.length;
     const fc = ruleProposal.newFields.length;
     const qc = ruleProposal.proposedQuestions.length + ruleProposal.deletedQuestionIds.length;
-    if (rc > 0) parts.push(`${rc} rule(s)`);
     if (fc > 0) parts.push(`${fc} field(s)`);
     if (qc > 0) parts.push(`${qc} question(s)`);
     toast.success(`Applied ${parts.join(" + ") || "changes"}`);
@@ -729,12 +782,17 @@ export default function PropertySetupPage() {
       return;
     }
     const qs = questions.filter((q) => q.fieldIds.includes(field.id));
-    const rs = rules.filter((r) => ruleReferencesField(r, field.id));
-    if (qs.length === 0 && rs.length === 0) {
+    if (qs.length === 0) {
       setFields((prev) => prev.filter((_, i) => i !== index));
       return;
     }
     setFieldDeleteIndex(index);
+  }
+
+  function stripBranchesForField(branches: import("@/lib/question").Branch[], fid: string): import("@/lib/question").Branch[] {
+    return branches
+      .filter((b) => b.condition.fieldId !== fid)
+      .map((b) => ({ ...b, subQuestions: b.subQuestions.map((sq) => ({ ...sq, branches: stripBranchesForField(sq.branches, fid) })) }));
   }
 
   function confirmDeleteField() {
@@ -752,11 +810,11 @@ export default function PropertySetupPage() {
         .map((q) => ({
           ...q,
           fieldIds: q.fieldIds.filter((x) => x !== fid),
+          branches: stripBranchesForField(q.branches, fid),
         }))
         .filter((q) => q.fieldIds.length > 0);
       return next.map((q, i) => ({ ...q, sort_order: i }));
     });
-    setRules((prev) => prev.filter((r) => !ruleReferencesField(r, fid)));
     setFields((prev) => prev.filter((_, i) => i !== index));
   }
 
@@ -771,7 +829,12 @@ export default function PropertySetupPage() {
     );
   }
 
-  const isNew = !description.trim() && fields.length === 0 && questions.length === 0 && rules.length === 0;
+  const isNew = !description.trim() && fields.length === 0 && questions.length === 0;
+
+  const currentStateStr = JSON.stringify({
+    title, description, fields, questions, links, ai_instructions: aiInstructions, variables
+  });
+  const hasDraftChanges = status === "draft" || (publishedStateStr !== currentStateStr);
 
   return (
     <>
@@ -786,14 +849,21 @@ export default function PropertySetupPage() {
             <span className="truncate font-medium text-[#1a2e2a]">
               {title || "Untitled"}
             </span>
-            <span className="ml-1 text-xs text-[#1a2e2a]/30">
-              {fields.length} field{fields.length !== 1 ? "s" : ""} · {questions.length} question{questions.length !== 1 ? "s" : ""} · {rules.length} rule{rules.length !== 1 ? "s" : ""}
+            <span className={`ml-2 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+              status === "published" ? "bg-teal-100 text-teal-800" : "bg-amber-100 text-amber-800"
+            }`}>
+              {status}
             </span>
-            <span className="ml-1.5 shrink-0 text-[#1a2e2a]/25" aria-hidden>
-              ·
-            </span>
+            {hasDraftChanges && status === "published" && (
+              <span className="ml-1 text-[11px] font-medium text-amber-600">
+                Unpublished edits
+              </span>
+            )}
+          </div>
+
+          <div className="flex shrink-0 items-center gap-3">
             <span
-              className="shrink-0 text-[11px] tabular-nums text-[#1a2e2a]/30"
+              className="text-[11px] text-[#1a2e2a]/40 tabular-nums mr-2"
               aria-live="polite"
             >
               {saving
@@ -801,28 +871,61 @@ export default function PropertySetupPage() {
                 : showSaved && !dirty
                   ? "Saved"
                   : dirty
-                    ? "Unsaved — saves automatically"
-                    : "All changes saved"}
+                    ? "Unsaved"
+                    : ""}
             </span>
-          </div>
-
-          <div className="flex shrink-0 items-center gap-2">
-            <button type="button" onClick={() => setShareModalOpen(true)} className="flex items-center gap-1.5 rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/50 transition-colors hover:bg-[#f7f9f8] hover:text-[#1a2e2a]">
-              <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden>
-                <path d="M10.5 5h-1a2 2 0 0 0-2 2v0a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v0a2 2 0 0 0-2-2ZM4.5 5h-1a2 2 0 0 0-2 2v0a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v0a2 2 0 0 0-2-2ZM5 7h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
-              </svg>
-              Share link
-            </button>
             <button
               type="button"
               onClick={async () => {
+                const issues = validatePublishableProperty({ fields, questions });
+                setPublishIssues(issues);
+                if (issues.length > 0) {
+                  toast.error(`Fix ${issues.length} issue${issues.length === 1 ? "" : "s"} before previewing`);
+                  return;
+                }
                 await flushSave();
-                window.open(`/chat/${slug}`, "_blank");
+                window.open(`/chat/${slug}?preview=1`, "_blank");
               }}
-              className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90"
+              className="rounded-lg px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/60 transition-colors hover:bg-black/5 hover:text-[#1a2e2a]"
             >
-              Preview →
+              Preview draft
             </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (status !== "published") {
+                  toast.error("Publish this property before sharing the live link");
+                  return;
+                }
+                setShareModalOpen(true);
+              }}
+              className="flex items-center gap-1.5 rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/70 transition-colors hover:bg-[#f7f9f8] hover:text-[#1a2e2a]"
+            >
+              <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden>
+                <path d="M10.5 5h-1a2 2 0 0 0-2 2v0a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v0a2 2 0 0 0-2-2ZM4.5 5h-1a2 2 0 0 0-2 2v0a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v0a2 2 0 0 0-2-2ZM5 7h4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              </svg>
+              Copy link
+            </button>
+
+            {status === "published" && (
+              <button
+                type="button"
+                onClick={() => void unpublishProperty()}
+                className="rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/55 transition-colors hover:bg-[#f7f9f8] hover:text-[#1a2e2a]"
+              >
+                Unpublish
+              </button>
+            )}
+            {hasDraftChanges && (
+              <button
+                type="button"
+                onClick={() => void publishProperty()}
+                className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90"
+              >
+                Publish changes
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -845,9 +948,57 @@ export default function PropertySetupPage() {
               </li>
               <li className="flex gap-2">
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-teal-700 text-[10px] font-bold text-white">3</span>
-                Add <strong>rules</strong> for auto-rejection or acceptance profiles, then <strong>Share link</strong> with applicants
+                Add <strong>reject branches</strong> to your questions, then <strong>Share link</strong> with applicants
               </li>
             </ol>
+          </section>
+        )}
+
+        {publishIssues.length > 0 && (
+          <section className="rounded-xl border border-amber-200 bg-amber-50/80 p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <h2 className="text-sm font-semibold text-amber-950">Before publishing</h2>
+                <ul className="mt-2 space-y-1">
+                  {publishIssues.slice(0, 8).map((issue, index) => {
+                    const hasTarget = issue.section === "questions" && issue.target?.questionId;
+                    return (
+                      <li key={`${issue.section}-${index}`}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (issue.section === "fields") {
+                              setActiveTab("Fields");
+                            } else if (hasTarget) {
+                              setActiveTab("Questions");
+                              setExternalFocus({ id: `${issue.target!.questionId}-${index}`, target: issue.target! });
+                            }
+                          }}
+                          className="group flex items-baseline gap-2 text-left text-sm text-amber-900/75 hover:text-amber-950"
+                        >
+                          <span className="shrink-0 rounded bg-amber-200/60 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-amber-900 group-hover:bg-amber-300/60">
+                            {issue.label}
+                          </span>
+                          <span className={hasTarget ? "underline-offset-2 group-hover:underline" : ""}>{issue.message}</span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {publishIssues.length > 8 && (
+                  <p className="mt-2 text-xs text-amber-900/60">
+                    {publishIssues.length - 8} more issue{publishIssues.length - 8 === 1 ? "" : "s"} remaining.
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setPublishIssues([])}
+                className="shrink-0 text-xs font-medium text-amber-900/60 hover:text-amber-950"
+              >
+                Dismiss
+              </button>
+            </div>
           </section>
         )}
 
@@ -859,7 +1010,6 @@ export default function PropertySetupPage() {
               const count =
                 tab === "Fields" ? fields.length :
                 tab === "Questions" ? questions.length :
-                tab === "Rules" ? rules.length :
                 tab === "Variables" ? variables.length :
                 0;
               return (
@@ -926,15 +1076,13 @@ export default function PropertySetupPage() {
                 <div>
                   <h3 className="text-sm font-medium text-foreground/80">Data schema</h3>
                   <p className="text-xs text-foreground/60">
-                    Define fields to store (used by screening rules and interview questions). Eligibility
-                    reject/require rules stay on the Rules tab.
+                    Define fields to store applicant answers (used by questions and reject branches).
                   </p>
                 </div>
 
                 <LandlordFieldsSection
                   fields={fields}
                   onChange={setFields}
-                  allFields={fields}
                   onBeforeDelete={(field, index) => {
                     requestDeleteField(index);
                     return false;
@@ -950,8 +1098,10 @@ export default function PropertySetupPage() {
                   questions={questions}
                   fields={fields}
                   customVariables={variables}
+                  aiInstructions={aiInstructions}
                   onChange={setQuestions}
                   onGenerateTargeted={handleGenerateTargeted}
+                  externalFocus={externalFocus}
                   onCreateField={(label) => {
                     const baseId = label
                       ? label.toLowerCase().replace(/[^a-z0-9\s]/g, "").trim().replace(/\s+/g, "_").slice(0, 40)
@@ -971,161 +1121,6 @@ export default function PropertySetupPage() {
                     return newId;
                   }}
                 />
-
-                {/* Floating AI button */}
-                <div className="absolute bottom-4 right-4">
-                  {questionsAiOpen ? (
-                    <div className="flex w-80 flex-col gap-2 rounded-xl border border-teal-700/20 bg-white p-3 shadow-lg">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-medium text-foreground/60">
-                          {clarifyingQuestions.length > 0 ? "A few quick questions" : "Generate with AI"}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setQuestionsAiOpen(false);
-                            setQuestionsPrompt("");
-                            setClarifyingQuestions([]);
-                            setClarifyingAnswers([]);
-                          }}
-                          aria-label="Close"
-                          className="rounded p-0.5 text-foreground/40 hover:text-foreground/70"
-                        >
-                          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
-                            <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                          </svg>
-                        </button>
-                      </div>
-
-                      {clarifyingQuestions.length > 0 ? (
-                        <>
-                          <div className="rounded-md border border-foreground/8 bg-foreground/[0.02] px-2 py-1.5 text-xs text-foreground/55 whitespace-pre-wrap">
-                            {questionsPrompt}
-                          </div>
-                          <div className="flex flex-col gap-2">
-                            {clarifyingQuestions.map((q, i) => (
-                              <div key={i} className="flex flex-col gap-1">
-                                <label className="text-xs font-medium text-foreground/75">{q}</label>
-                                <textarea
-                                  rows={2}
-                                  value={clarifyingAnswers[i] ?? ""}
-                                  onChange={(e) => {
-                                    const next = [...clarifyingAnswers];
-                                    next[i] = e.target.value;
-                                    setClarifyingAnswers(next);
-                                  }}
-                                  placeholder="(optional)"
-                                  className="resize-none rounded-md border border-foreground/10 bg-white px-2 py-1 text-xs text-foreground placeholder:text-foreground/40 focus:border-teal-700/60 focus:outline-none focus:ring-1 focus:ring-teal-700/20"
-                                />
-                              </div>
-                            ))}
-                          </div>
-                          <div className="flex items-center justify-between gap-2">
-                            <button
-                              type="button"
-                              onClick={() => { setClarifyingQuestions([]); setClarifyingAnswers([]); }}
-                              disabled={loadingPhase !== null}
-                              className="text-xs text-foreground/55 hover:text-foreground/80 disabled:opacity-50"
-                            >
-                              ← Edit prompt
-                            </button>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => void submitClarifications(true)}
-                                disabled={loadingPhase !== null}
-                                className="text-xs text-foreground/55 hover:text-foreground/80 disabled:opacity-50"
-                              >
-                                Skip
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void submitClarifications(false)}
-                                disabled={loadingPhase !== null}
-                                className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-teal-800 disabled:opacity-60"
-                              >
-                                {loadingPhase === "questions" ? "Generating…" : "Generate"}
-                              </button>
-                            </div>
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <QuestionMentionTextarea
-                            rows={4}
-                            value={questionsPrompt}
-                            onChange={setQuestionsPrompt}
-                            questions={questions}
-                            onKeyDown={(e) => { if (e.key === "Escape") { setQuestionsAiOpen(false); setQuestionsPrompt(""); } }}
-                            placeholder="e.g. Ask about number of occupants, pets, income, and move-in date — type @ to reference a question"
-                            autoFocus
-                            disabled={isTranscribing}
-                            className="w-full resize-none rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm text-foreground placeholder:text-foreground/50 focus:border-teal-700/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20 disabled:opacity-50"
-                          />
-                          <div className="flex items-center gap-2">
-                            {/* Mic button */}
-                            <button
-                              type="button"
-                              onClick={() => void (isRecording ? stopRecording() : startRecording())}
-                              disabled={isTranscribing || loadingPhase !== null}
-                              aria-label={isRecording ? "Stop recording" : "Start recording"}
-                              className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${isRecording ? "bg-red-500 text-white" : "bg-foreground/8 text-foreground/60 hover:bg-foreground/12 hover:text-foreground/80"}`}
-                            >
-                              {isRecording && (
-                                <span className="absolute inset-0 animate-ping rounded-full bg-red-400 opacity-50" />
-                              )}
-                              {isTranscribing ? (
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="animate-spin" aria-hidden>
-                                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5" strokeDasharray="40 20" />
-                                </svg>
-                              ) : (
-                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden>
-                                  <rect x="9" y="2" width="6" height="13" rx="3" fill="currentColor" />
-                                  <path d="M5 10a7 7 0 0014 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                                  <line x1="12" y1="19" x2="12" y2="23" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                                </svg>
-                              )}
-                            </button>
-                            {/* Timer */}
-                            {isRecording && (
-                              <span className="font-mono text-xs tabular-nums text-red-500">
-                                {`${Math.floor(recordingSeconds / 60)}:${String(recordingSeconds % 60).padStart(2, "0")}`}
-                                <span className="ml-1 text-red-400/70">/ 5:00</span>
-                              </span>
-                            )}
-                            <div className="ml-auto">
-                              <button
-                                type="button"
-                                onClick={() => void handleGenerateQuestions(questionsPrompt)}
-                                disabled={!questionsPrompt.trim() || loadingPhase !== null || isRecording || isTranscribing}
-                                className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-teal-800 disabled:opacity-60"
-                              >
-                                {loadingPhase === "questions" ? "Thinking…" : "Generate with AI"}
-                              </button>
-                            </div>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        // Defensive: clear any stale clarifying state from a previously closed session
-                        // so an in-flight clarify response can't surface old questions on next open.
-                        setClarifyingQuestions([]);
-                        setClarifyingAnswers([]);
-                        setQuestionsAiOpen(true);
-                      }}
-                      aria-label="Generate with AI"
-                      className="flex h-10 w-10 items-center justify-center rounded-full bg-teal-700 text-white shadow-md transition-colors hover:bg-teal-800"
-                    >
-                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-                        <path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6L12 2z" fill="currentColor" />
-                      </svg>
-                    </button>
-                  )}
-                </div>
               </div>
             )}
 
@@ -1139,48 +1134,16 @@ export default function PropertySetupPage() {
                     <code className="font-mono text-[11px]">{"{{key}}"}</code> syntax.
                   </p>
                 </div>
-                <VariablesSection variables={variables} onChange={setVariables} />
+                <VariablesSection variables={variables} onChange={setVariables} questionTexts={getAllQuestionTexts(questions)} />
               </div>
             )}
 
             {/* ── Rules Tab ── */}
             {activeTab === "Rules" && (
               <div className="space-y-6">
-                <div className="flex flex-col gap-2">
-                  <p className="text-xs text-foreground/60">
-                    Describe what rules to create — e.g. rejection criteria or acceptance profiles.
-                  </p>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={rulesPrompt}
-                      onChange={(e) => setRulesPrompt(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && !loadingPhase && rulesPrompt.trim()) {
-                          e.preventDefault();
-                          void handleGenerateRules(rulesPrompt).then(() => setRulesPrompt(""));
-                        }
-                      }}
-                      placeholder="e.g. Reject smokers. Allow max 2 adults, or 3 if family with child."
-                      className="flex-1 rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm text-foreground placeholder:text-foreground/70 focus:border-teal-700/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => void handleGenerateRules(rulesPrompt).then(() => setRulesPrompt(""))}
-                      disabled={!rulesPrompt.trim() || loadingPhase !== null || fields.length === 0}
-                      className="flex shrink-0 items-center gap-1.5 rounded-lg bg-teal-700 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-teal-800 disabled:opacity-60"
-                    >
-                      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
-                        <path d="M7 1v3M7 10v3M1 7h3M10 7h3M2.75 2.75l2.12 2.12M9.13 9.13l2.12 2.12M11.25 2.75l-2.12 2.12M4.87 9.13l-2.12 2.12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-                      </svg>
-                      {loadingPhase === "rules" ? "Generating…" : "Generate with AI"}
-                    </button>
-                  </div>
-                </div>
-                <RulesSection
+                <RulesSummary
+                  questions={questions}
                   fields={fields}
-                  rules={rules}
-                  onChange={setRules}
                 />
               </div>
             )}
@@ -1205,6 +1168,34 @@ export default function PropertySetupPage() {
             {/* ── AI Behavior Tab ── */}
             {activeTab === "AI Behavior" && (
               <div className="space-y-6">
+                <div className="space-y-4 rounded-lg border border-foreground/8 bg-[#f7f9f8] p-5">
+                  <div>
+                    <h3 className="text-sm font-medium text-foreground/80">Opening greeting</h3>
+                    <p className="mt-0.5 text-[11px] text-foreground/55">Instructions for how the AI should open the conversation. Leave blank to use the default.</p>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-foreground/60">When the applicant&apos;s name is known</label>
+                    <p className="text-[11px] text-foreground/55">The URL will contain <code className="font-mono text-[10px]">?name=…</code>. Use <code className="font-mono text-[10px]">{"{name}"}</code> to include it.</p>
+                    <textarea
+                      rows={2}
+                      value={aiInstructions.greetingWithName}
+                      onChange={(e) => setAiInstructions((prev) => ({ ...prev, greetingWithName: e.target.value }))}
+                      placeholder={`e.g. Greet {name} warmly by name, briefly introduce yourself, and ask about their move-in date.`}
+                      className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-teal-700/60 focus:outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-foreground/60">When the applicant&apos;s name is unknown</label>
+                    <textarea
+                      rows={2}
+                      value={aiInstructions.greetingWithoutName}
+                      onChange={(e) => setAiInstructions((prev) => ({ ...prev, greetingWithoutName: e.target.value }))}
+                      placeholder="e.g. Very briefly introduce yourself and ask for the applicant's name first."
+                      className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-teal-700/60 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
                 <div className="space-y-4 rounded-lg border border-foreground/8 bg-[#f7f9f8] p-5">
                   <h3 className="text-sm font-medium text-foreground/80">Conversation controls</h3>
                   <div className="grid gap-4 sm:grid-cols-2">
@@ -1287,49 +1278,296 @@ export default function PropertySetupPage() {
                 </div>
               </div>
             )}
+
+            {/* ── Test Tab ── */}
+            {activeTab === "Test" && (
+              <div className="space-y-6">
+                <div className="flex flex-col gap-1">
+                  <p className="text-sm text-foreground/60">
+                    Describe an applicant scenario and AI will simulate the full screening conversation, extract answers, and evaluate your question branches — so you can verify your setup before sharing.
+                  </p>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <label className="text-xs font-medium text-foreground/60">Scenario</label>
+                  <textarea
+                    rows={3}
+                    value={testScenario}
+                    onChange={(e) => { setTestScenario(e.target.value); setTestResult(null); setTestSaved(false); }}
+                    placeholder="e.g. A well-qualified applicant — income $9,000/mo, no pets, moving in June 1, currently employed full-time"
+                    className="w-full resize-none rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2.5 text-sm placeholder:text-foreground/35 focus:border-teal-700/40 focus:bg-white focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleRunTest()}
+                    disabled={!testScenario.trim() || testLoading || fields.length === 0}
+                    className="self-start rounded-lg bg-teal-800 px-5 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+                  >
+                    {testLoading ? "Generating…" : "Run test"}
+                  </button>
+                  {fields.length === 0 && (
+                    <p className="text-xs text-foreground/40">Add fields to your property before running a test.</p>
+                  )}
+                </div>
+
+                {testResult && (
+                  <div className="flex flex-col gap-5 border-t border-foreground/8 pt-5">
+                    {/* Outcome */}
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-medium text-foreground/60">Outcome:</span>
+                      {testResult.outcome === "qualified"   && <span className="rounded-full bg-teal-100 px-3 py-1 text-sm font-semibold text-teal-800">Qualified</span>}
+                      {testResult.outcome === "rejected"    && <span className="rounded-full bg-red-100 px-3 py-1 text-sm font-semibold text-red-700">Rejected</span>}
+                      {testResult.outcome === "review"      && <span className="rounded-full bg-amber-100 px-3 py-1 text-sm font-semibold text-amber-700">Review</span>}
+                      {testResult.outcome === "in_progress" && <span className="rounded-full bg-zinc-100 px-3 py-1 text-sm font-semibold text-zinc-500">Incomplete</span>}
+                      {testResult.violations.filter(Boolean).length > 0 && (
+                        <span className="text-xs text-red-600">{testResult.violations.filter(Boolean)[0]}</span>
+                      )}
+                    </div>
+
+                    {/* Extracted answers */}
+                    {Object.keys(testResult.answers).length > 0 && (
+                      <div className="flex flex-col gap-2">
+                        <p className="text-xs font-semibold uppercase tracking-wider text-foreground/40">Extracted answers</p>
+                        <div className="grid grid-cols-2 gap-x-6 gap-y-1.5">
+                          {Object.entries(testResult.answers).map(([k, v]) => {
+                            const f = fields.find((x) => x.id === k);
+                            return (
+                              <div key={k} className="flex items-baseline gap-2 text-sm">
+                                <span className="shrink-0 text-foreground/50">{f?.label ?? k}:</span>
+                                <span className="truncate font-medium text-foreground/80">{v}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Conversation */}
+                    {testResult.messages.length > 0 && (
+                      <div className="flex flex-col gap-2">
+                        <p className="text-xs font-semibold uppercase tracking-wider text-foreground/40">Simulated conversation</p>
+                        <div className="flex flex-col gap-2 rounded-xl border border-foreground/8 bg-[#f7f9f8] p-4 max-h-96 overflow-y-auto">
+                          {testResult.messages.map((m, i) => (
+                            <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                              <div className={`max-w-[75%] rounded-xl px-3 py-2 text-sm leading-relaxed ${
+                                m.role === "user"
+                                  ? "bg-teal-800 text-white"
+                                  : "bg-white border border-foreground/8 text-foreground/80"
+                              }`}>
+                                {m.content}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Save */}
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveTest()}
+                      disabled={testSaved}
+                      className="self-start rounded-lg border border-foreground/10 px-4 py-2 text-sm text-foreground/60 transition-colors hover:bg-[#f7f9f8] disabled:opacity-40"
+                    >
+                      {testSaved ? "Saved to Applicants ✓" : "Save test session"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </section>
-      </div>
 
+        {/* Global Floating AI button */}
+        <div className="fixed bottom-8 right-8 z-50">
+          {questionsAiOpen ? (
+            <div className="flex w-80 flex-col gap-2 rounded-xl border border-teal-700/20 bg-white p-3 shadow-lg">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-foreground/60">
+                  {clarifyingQuestions.length > 0 ? "A few quick questions" : "Generate with AI"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQuestionsAiOpen(false);
+                    setQuestionsPrompt("");
+                    setClarifyingQuestions([]);
+                    setClarifyingAnswers([]);
+                  }}
+                  aria-label="Close"
+                  className="rounded p-0.5 text-foreground/40 hover:text-foreground/70"
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+                    <path d="M3 3l10 10M13 3L3 13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                  </svg>
+                </button>
+              </div>
+
+              {clarifyingQuestions.length > 0 ? (
+                <>
+                  <div className="rounded-md border border-foreground/8 bg-foreground/[0.02] px-2 py-1.5 text-xs text-foreground/55 whitespace-pre-wrap">
+                    {questionsPrompt}
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    {clarifyingQuestions.map((q, i) => (
+                      <div key={i} className="flex flex-col gap-1">
+                        <label className="text-xs font-medium text-foreground/75">{q}</label>
+                        <textarea
+                          rows={2}
+                          value={clarifyingAnswers[i] ?? ""}
+                          onChange={(e) => {
+                            const next = [...clarifyingAnswers];
+                            next[i] = e.target.value;
+                            setClarifyingAnswers(next);
+                          }}
+                          placeholder="(optional)"
+                          className="resize-none rounded-md border border-foreground/10 bg-white px-2 py-1 text-xs text-foreground placeholder:text-foreground/40 focus:border-teal-700/60 focus:outline-none focus:ring-1 focus:ring-teal-700/20"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { setClarifyingQuestions([]); setClarifyingAnswers([]); }}
+                      disabled={loadingPhase !== null}
+                      className="text-xs text-foreground/55 hover:text-foreground/80 disabled:opacity-50"
+                    >
+                      ← Edit prompt
+                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void submitClarifications(true)}
+                        disabled={loadingPhase !== null}
+                        className="text-xs text-foreground/55 hover:text-foreground/80 disabled:opacity-50"
+                      >
+                        Skip
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void submitClarifications(false)}
+                        disabled={loadingPhase !== null}
+                        className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-teal-800 disabled:opacity-60"
+                      >
+                        {loadingPhase === "questions" ? "Generating…" : "Generate"}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {!questionsPrompt && (
+                    <div className="flex flex-wrap gap-1.5 mb-1">
+                      {[
+                        "Add a standard pet policy",
+                        "Require 3x income and no evictions",
+                        "Make it student housing friendly",
+                      ].map((t) => (
+                        <button
+                          key={t}
+                          type="button"
+                          onClick={() => setQuestionsPrompt(t)}
+                          className="rounded-full border border-teal-700/20 bg-teal-50/50 px-2.5 py-1 text-[10px] font-medium text-teal-800 transition-colors hover:bg-teal-100/50"
+                        >
+                          {t}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <QuestionMentionTextarea
+                    rows={4}
+                    value={questionsPrompt}
+                    onChange={setQuestionsPrompt}
+                    questions={questions}
+                    onKeyDown={(e) => { if (e.key === "Escape") { setQuestionsAiOpen(false); setQuestionsPrompt(""); } }}
+                    placeholder="e.g. Ask about number of occupants, pets, and income. Reject smokers."
+                    autoFocus
+                    disabled={isTranscribing}
+                    className="w-full resize-none rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-2 text-sm text-foreground placeholder:text-foreground/50 focus:border-teal-700/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20 disabled:opacity-50"
+                  />
+                  <div className="flex items-center gap-2">
+                    {/* Mic button */}
+                    <button
+                      type="button"
+                      onClick={() => void (isRecording ? stopRecording() : startRecording())}
+                      disabled={isTranscribing || loadingPhase !== null}
+                      aria-label={isRecording ? "Stop recording" : "Start recording"}
+                      className={`relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors disabled:opacity-40 ${isRecording ? "bg-red-500 text-white" : "bg-foreground/8 text-foreground/60 hover:bg-foreground/12 hover:text-foreground/80"}`}
+                    >
+                      {isRecording && (
+                        <span className="absolute inset-0 animate-ping rounded-full bg-red-400 opacity-50" />
+                      )}
+                      {isTranscribing ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="animate-spin" aria-hidden>
+                          <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2.5" strokeDasharray="40 20" />
+                        </svg>
+                      ) : (
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden>
+                          <rect x="9" y="2" width="6" height="13" rx="3" fill="currentColor" />
+                          <path d="M5 10a7 7 0 0014 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                          <line x1="12" y1="19" x2="12" y2="23" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                        </svg>
+                      )}
+                    </button>
+                    {/* Timer */}
+                    {isRecording && (
+                      <span className="font-mono text-xs tabular-nums text-red-500">
+                        {`${Math.floor(recordingSeconds / 60)}:${String(recordingSeconds % 60).padStart(2, "0")}`}
+                        <span className="ml-1 text-red-400/70">/ 5:00</span>
+                      </span>
+                    )}
+                    <div className="ml-auto">
+                      <button
+                        type="button"
+                        onClick={() => void handleGenerateQuestions(questionsPrompt)}
+                        disabled={!questionsPrompt.trim() || loadingPhase !== null || isRecording || isTranscribing}
+                        className="rounded-lg bg-teal-700 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-teal-800 disabled:opacity-60"
+                      >
+                        {loadingPhase === "questions" ? "Thinking…" : "Generate with AI"}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setClarifyingQuestions([]);
+                setClarifyingAnswers([]);
+                setQuestionsAiOpen(true);
+              }}
+              aria-label="Generate with AI"
+              className="flex h-12 w-12 items-center justify-center rounded-full bg-teal-700 text-white shadow-lg transition-transform hover:scale-105 hover:bg-teal-800"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6L12 2z" fill="currentColor" />
+              </svg>
+            </button>
+          )}
+        </div>
+
+      </div>
       <RuleProposalModal
         open={!!ruleProposal}
         proposal={ruleProposal}
-        existingRules={rules}
         existingQuestions={questions}
         existingFields={fields}
+        existingVariables={variables}
         onConfirm={applyProposal}
         onCancel={() => setRuleProposal(null)}
       />
 
-      <ConfirmDialog
+      <DeleteFieldDialog
         open={fieldDeleteIndex !== null}
-        title="Delete this field?"
-        description={
-          fieldDeleteIndex === null
-            ? ""
-            : (() => {
-                const field = fields[fieldDeleteIndex];
-                if (!field?.id) return "";
-                const qs = questions.filter((q) => q.fieldIds.includes(field.id));
-                const rs = rules.filter((r) => ruleReferencesField(r, field.id));
-                const lines: string[] = [
-                  `Field “${field.label || field.id}” (${field.id}) is still in use.`,
-                  "",
-                  qs.length > 0
-                    ? `Questions that reference it (${qs.length}):\n${qs.map((q) => `• ${q.text.slice(0, 120)}${q.text.length > 120 ? "…" : ""} [${q.fieldIds.join(", ")}]`).join("\n")}`
-                    : "Questions: none",
-                  "",
-                  rs.length > 0
-                    ? `Rules that reference it (${rs.length}) — these will be removed:\n${rs.map((r) => `• ${summarizeRule(r)}`).join("\n")}`
-                    : "Rules: none",
-                  "",
-                  "Questions will have this field unlinked. Any question left with no fields will be removed.",
-                ];
-                return lines.join("\n");
-              })()
+        field={fieldDeleteIndex !== null ? (fields[fieldDeleteIndex] ?? null) : null}
+        referencedQuestions={
+          fieldDeleteIndex !== null
+            ? questions.filter((q) => q.fieldIds.includes(fields[fieldDeleteIndex]?.id ?? ""))
+            : []
         }
-        confirmLabel="Delete field"
-        destructive
         onConfirm={() => confirmDeleteField()}
         onCancel={() => setFieldDeleteIndex(null)}
       />
@@ -1339,7 +1577,7 @@ export default function PropertySetupPage() {
             <form onSubmit={handleRenameSubmit} className="p-6">
               <h3 className="text-sm font-semibold text-[#1a2e2a]">Rename Property</h3>
               <p className="mt-2 text-sm text-[#1a2e2a]/60">
-                Enter a unique name for this property. This will be used in the chat link.
+                Enter a new internal name for this property. Your active share link will remain unchanged.
               </p>
               <div className="mt-4">
                 <input

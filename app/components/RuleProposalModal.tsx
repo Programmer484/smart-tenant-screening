@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import type { LandlordField } from "@/lib/landlord-field";
-import type { LandlordRule } from "@/lib/landlord-rule";
+import type { AiInstructions, PropertyLinks, PropertyVariable } from "@/lib/property";
 import type { Branch, Question } from "@/lib/question";
 
 const OUTCOME_STYLES: Record<string, { label: string; badge: string; border: string; bg: string; text: string }> = {
@@ -59,28 +59,29 @@ function BranchList({ branches, fieldLabel, depth = 0 }: {
 }
 
 export type Proposal = {
-  newRules: LandlordRule[];
-  modifiedRules: LandlordRule[];
-  deletedRuleIds: string[];
   newFields: LandlordField[];
   proposedQuestions: Question[];
   deletedQuestionIds: string[];
+  variables?: PropertyVariable[];
+  links?: Partial<PropertyLinks>;
+  aiInstructions?: Partial<AiInstructions>;
+  notesToUser?: string[];
 };
 
 export function RuleProposalModal({
   open,
   proposal,
-  existingRules,
   existingQuestions,
   existingFields,
+  existingVariables,
   onConfirm,
   onCancel,
 }: {
   open: boolean;
   proposal: Proposal | null;
-  existingRules: LandlordRule[];
   existingQuestions: Question[];
   existingFields?: LandlordField[];
+  existingVariables?: PropertyVariable[];
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -101,11 +102,11 @@ export function RuleProposalModal({
       onClose={onCancel}
       className="fixed inset-0 z-50 m-auto max-w-xl rounded-xl border border-black/8 bg-white p-0 shadow-xl backdrop:bg-black/40"
     >
-      <ProposalReviewContent 
+      <ProposalReviewContent
         proposal={proposal}
-        existingRules={existingRules}
         existingQuestions={existingQuestions}
         existingFields={existingFields}
+        existingVariables={existingVariables}
         onConfirm={onConfirm}
         onCancel={onCancel}
       />
@@ -115,25 +116,44 @@ export function RuleProposalModal({
 
 export function ProposalReviewContent({
   proposal,
-  existingRules,
   existingQuestions,
   existingFields,
+  existingVariables,
   onConfirm,
   onCancel,
   showActions = true,
 }: {
   proposal: Proposal;
-  existingRules: LandlordRule[];
   existingQuestions: Question[];
   existingFields?: LandlordField[];
+  existingVariables?: PropertyVariable[];
   onConfirm?: () => void;
   onCancel?: () => void;
   showActions?: boolean;
 }) {
-  const hasRuleChanges = proposal.newRules.length > 0 || proposal.modifiedRules.length > 0 || proposal.deletedRuleIds.length > 0;
   const hasFieldChanges = proposal.newFields.length > 0;
   const hasQuestionChanges = proposal.proposedQuestions.length > 0 || proposal.deletedQuestionIds.length > 0;
-  const hasChanges = hasRuleChanges || hasFieldChanges || hasQuestionChanges;
+
+  const currentVars: PropertyVariable[] = existingVariables ?? [];
+  const proposedVars = proposal.variables;
+
+  let newVars: PropertyVariable[] = [];
+  let modifiedVars: { old: PropertyVariable; new: PropertyVariable }[] = [];
+  let deletedVars: PropertyVariable[] = [];
+  let hasVariableChanges = false;
+
+  if (proposedVars) {
+    newVars = proposedVars.filter((pv) => !currentVars.find((cv) => cv.key === pv.key));
+    modifiedVars = proposedVars
+      .map((pv) => ({ new: pv, old: currentVars.find((cv) => cv.key === pv.key) }))
+      .filter((v): v is { old: PropertyVariable; new: PropertyVariable } =>
+        v.old != null && (v.old.value !== v.new.value || v.old.label !== v.new.label),
+      );
+    deletedVars = currentVars.filter((cv) => !proposedVars.find((pv) => pv.key === cv.key));
+    hasVariableChanges = newVars.length > 0 || modifiedVars.length > 0 || deletedVars.length > 0;
+  }
+
+  const hasChanges = hasFieldChanges || hasQuestionChanges || hasVariableChanges;
 
   const fieldLabel = (id: string) => {
     const f = existingFields?.find((ef) => ef.id === id) ?? proposal.newFields.find((nf) => nf.id === id);
@@ -151,110 +171,26 @@ export function ProposalReviewContent({
         <p className="mt-1 text-sm text-[#1a2e2a]/60">
           {hasFieldChanges
             ? "The AI proposed changes that include new fields. Please review everything below."
-            : hasQuestionChanges && !hasRuleChanges
-              ? "Please review the proposed question changes."
-              : "Please review the proposed changes."}
+            : "Please review the proposed changes."}
         </p>
+        {proposal.notesToUser && proposal.notesToUser.length > 0 && (
+          <div className="mt-4 rounded-lg border border-teal-200 bg-teal-50/50 p-4">
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-teal-800 mb-2 flex items-center gap-2">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              AI Notes & Assumptions
+            </h4>
+            <ul className="list-disc pl-5 text-sm text-teal-900/80 space-y-1">
+              {proposal.notesToUser.map((note, i) => (
+                <li key={i}>{note}</li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       <div className="overflow-y-auto p-6 flex flex-col gap-6 flex-1">
-          {/* Deleted Rules */}
-          {proposal.deletedRuleIds.length > 0 && (
-            <div>
-              <h4 className="text-xs font-semibold uppercase tracking-wider text-red-600">Rules to Delete</h4>
-              <ul className="mt-2 flex flex-col gap-2">
-                {proposal.deletedRuleIds.map((id, i) => {
-                  const r = existingRules.find(er => er.id === id);
-                  if (!r) return null;
-                  return (
-                    <li key={i} className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm flex items-start gap-2 opacity-70">
-                      <span className="font-medium text-red-900/80 min-w-16 line-through">
-                        {r.kind === "reject" ? "Reject if:" : "Require:"}
-                      </span>
-                      <div className="flex flex-col text-red-900/70 line-through">
-                        {r.conditions.map((c, idx) => (
-                          <div key={idx}>
-                            {idx > 0 && <span className="text-[11px] font-bold text-red-900/40 uppercase mr-1">and</span>}
-                            {c.fieldId} {c.operator} {c.value}
-                          </div>
-                        ))}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          )}
-
-          {/* Modified Rules */}
-          {proposal.modifiedRules.length > 0 && (
-            <div>
-              <h4 className="text-xs font-semibold uppercase tracking-wider text-amber-600">Rules to Modify</h4>
-              <ul className="mt-2 flex flex-col gap-3">
-                {proposal.modifiedRules.map((rule, i) => {
-                  const original = existingRules.find(er => er.id === rule.id);
-                  return (
-                    <li key={i} className="rounded-xl border border-amber-200 bg-amber-50/50 overflow-hidden shadow-sm">
-                      {original && (
-                        <div className="p-3 text-sm flex items-start gap-2 bg-black/5 opacity-60">
-                          <span className="font-medium text-foreground/80 min-w-16 line-through">
-                            {original.kind === "reject" ? "Reject if:" : "Require:"}
-                          </span>
-                          <div className="flex flex-col text-foreground/70 line-through">
-                            {original.conditions.map((c, idx) => (
-                              <div key={idx}>
-                                {idx > 0 && <span className="text-[11px] font-bold text-foreground/40 uppercase mr-1">and</span>}
-                                {c.fieldId} {c.operator} {c.value}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      
-                      <div className="p-3 text-sm flex items-start gap-2 bg-white">
-                        <span className="font-medium text-amber-900 min-w-16">
-                          {rule.kind === "reject" ? "Reject if:" : "Require:"}
-                        </span>
-                        <div className="flex flex-col text-amber-900/80">
-                          {rule.conditions.map((c, idx) => (
-                            <div key={idx} className="font-medium">
-                              {idx > 0 && <span className="text-[11px] font-bold text-amber-700/60 uppercase mr-1">and</span>}
-                              {c.fieldId} {c.operator} {c.value}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          )}
-
-          {/* New Rules */}
-          {proposal.newRules.length > 0 && (
-            <div>
-              <h4 className="text-xs font-semibold uppercase tracking-wider text-teal-700">New Rules</h4>
-              <ul className="mt-2 flex flex-col gap-2">
-                {proposal.newRules.map((rule, i) => (
-                  <li key={i} className="rounded-lg border border-teal-100 bg-teal-50/30 p-3 text-sm flex items-start gap-2">
-                    <span className="font-medium text-teal-900/80 min-w-16">
-                      {rule.kind === "reject" ? "Reject if:" : "Require:"}
-                    </span>
-                    <div className="flex flex-col text-teal-900/80 font-medium">
-                      {rule.conditions.map((c, idx) => (
-                        <div key={idx}>
-                          {idx > 0 && <span className="text-[11px] font-bold text-teal-700/60 uppercase mr-1">and</span>}
-                          {c.fieldId} {c.operator} {c.value}
-                        </div>
-                      ))}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
           {/* New Fields */}
           {proposal.newFields.length > 0 && (
             <div>
@@ -267,6 +203,64 @@ export function ProposalReviewContent({
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* Variable Changes */}
+          {hasVariableChanges && (
+            <div className="flex flex-col gap-4">
+              <h4 className="text-xs font-semibold uppercase tracking-wider text-pink-600">Variable Changes</h4>
+
+              {deletedVars.length > 0 && (
+                <div>
+                  <h5 className="text-[10px] font-semibold text-red-600 uppercase mb-1">Removed</h5>
+                  <div className="flex flex-wrap gap-2">
+                    {deletedVars.map((v, i) => (
+                      <div key={i} className="rounded border border-red-200 bg-red-50 px-2 py-1 flex flex-col gap-0.5 opacity-70">
+                        <span className="text-[10px] font-medium text-red-900/70 line-through">{v.label || v.key}</span>
+                        <span className="text-xs font-mono text-red-800/60 line-through">{v.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {modifiedVars.length > 0 && (
+                <div>
+                  <h5 className="text-[10px] font-semibold text-amber-600 uppercase mb-1">Modified</h5>
+                  <div className="flex flex-col gap-2">
+                    {modifiedVars.map((v, i) => (
+                      <div key={i} className="flex flex-wrap items-center gap-2 rounded border border-amber-200 bg-amber-50/50 p-2">
+                        <div className="flex flex-col gap-0.5 opacity-60 line-through">
+                          <span className="text-[10px] font-medium text-amber-900/70">{v.old.label || v.old.key}</span>
+                          <span className="text-xs font-mono text-amber-800/60">{v.old.value}</span>
+                        </div>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-amber-400">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14m-7-7l7 7-7 7" />
+                        </svg>
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[10px] font-medium text-amber-900">{v.new.label || v.new.key}</span>
+                          <span className="text-xs font-mono font-medium text-amber-900">{v.new.value}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {newVars.length > 0 && (
+                <div>
+                  <h5 className="text-[10px] font-semibold text-pink-600 uppercase mb-1">Added</h5>
+                  <div className="flex flex-wrap gap-2">
+                    {newVars.map((v, i) => (
+                      <div key={i} className="rounded border border-pink-200 bg-pink-50 px-2 py-1 flex flex-col gap-0.5 shadow-sm">
+                        <span className="text-[10px] font-medium text-pink-900">{v.label || v.key}</span>
+                        <span className="text-xs font-mono font-medium text-pink-900">{v.value}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

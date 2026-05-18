@@ -1,6 +1,5 @@
 import type { LandlordField } from "@/lib/landlord-field";
 import type { Question } from "@/lib/question";
-import type { LandlordRule } from "@/lib/landlord-rule";
 import type { AiInstructions, PropertyVariable } from "@/lib/property";
 
 export type ChatPropertyFixture = {
@@ -8,7 +7,6 @@ export type ChatPropertyFixture = {
   description?: string;
   fields: LandlordField[];
   questions: Question[];
-  rules?: LandlordRule[];
   variables?: PropertyVariable[];
   aiInstructions?: Partial<AiInstructions>;
 };
@@ -91,88 +89,27 @@ export const chatTestCases: ChatTestCase[] = [
     ],
   },
 
-  // ─── 3. Branch outcome: review ──────────────────────────────────
-  {
-    id: "outcome_branch_review",
-    name: "Outcome: branch review (manual landlord review)",
-    description: "An answer that triggers a branch with outcome='review' must set the session to review.",
-    property: {
-      fields: [FIELD_PETS],
-      questions: [
-        Q("q_pets", "Do you have any pets?", ["has_pets"], 0, [
-          {
-            id: "b_has_pets",
-            condition: { fieldId: "has_pets", operator: "==", value: "true" },
-            outcome: "review",
-            subQuestions: [],
-          },
-        ]),
-      ],
-    },
-    userMessages: ["Yes, I have a small dog."],
-    requirements: [
-      "The 'has_pets' field must be extracted with value 'true'.",
-      "Final sessionStatus must be 'review'.",
-      "Reply should communicate the application is being reviewed (not outright rejected, not qualified yet).",
-    ],
-  },
-
-  // ─── 4. Reject rule → clarifying status ─────────────────────────
-  // Note: this test is intentionally single-turn. The chat route's "clarification → reject"
-  // escalation depends on `clarification_pending` being persisted via sessionId, which we
-  // skip in the test runner to avoid polluting the sessions DB. Verifying the first-turn
-  // "clarifying" status is the in-memory-testable slice of the rule-reject flow.
-  {
-    id: "outcome_rule_clarifying",
-    name: "Outcome: reject rule first violation → clarifying",
-    description: "A 'reject' rule violation on first detection should set sessionStatus to 'clarifying' (giving the applicant a chance to correct).",
-    property: {
-      fields: [FIELD_INCOME],
-      questions: [Q("q_income", "What is your monthly income?", ["monthly_income"])],
-      rules: [
-        {
-          id: "rule_min_income",
-          kind: "reject",
-          conditions: [{ id: "c1", fieldId: "monthly_income", operator: "<", value: "2000" }],
-        },
-      ],
-    },
-    userMessages: ["My income is around 1500 a month."],
-    requirements: [
-      "monthly_income must be extracted as a number around 1500.",
-      "Final sessionStatus must be 'clarifying' (first rule violation, applicant gets one chance to correct).",
-      "The reply should communicate the eligibility concern and invite the applicant to clarify, NOT reject outright.",
-    ],
-  },
-
-  // ─── 5. Qualified ──────────────────────────────────────────────
+  // ─── 3. Qualified ──────────────────────────────────────────────
   {
     id: "outcome_qualified",
-    name: "Outcome: qualified (all questions answered, no rules violated)",
-    description: "When the interview is complete and no rules are violated, the session must be qualified.",
+    name: "Outcome: qualified (all questions answered)",
+    description: "When the interview is complete, the session must be qualified.",
     property: {
       fields: [FIELD_NAME, FIELD_INCOME],
       questions: [
         Q("q_name", "What is your name?", ["applicant_name"], 0),
         Q("q_income", "What is your monthly income?", ["monthly_income"], 1),
       ],
-      rules: [
-        {
-          id: "rule_min_income",
-          kind: "reject",
-          conditions: [{ id: "c1", fieldId: "monthly_income", operator: "<", value: "2000" }],
-        },
-      ],
     },
     initialAnswers: { applicant_name: "Alex" },
     userMessages: ["My income is 5000 a month."],
     requirements: [
       "monthly_income must be extracted as 5000.",
-      "Final sessionStatus must be 'qualified' or 'completed' (interview finished, no rules violated).",
+      "Final sessionStatus must be 'qualified' or 'completed' (interview finished).",
     ],
   },
 
-  // ─── 6. Off-topic rejection ─────────────────────────────────────
+  // ─── 4. Off-topic rejection ─────────────────────────────────────
   {
     id: "outcome_off_topic_reject",
     name: "Outcome: off-topic limit triggers rejection",
@@ -191,7 +128,7 @@ export const chatTestCases: ChatTestCase[] = [
     ],
   },
 
-  // ─── 7. Multi-field extraction ──────────────────────────────────
+  // ─── 5. Multi-field extraction ──────────────────────────────────
   {
     id: "extract_multiple_fields",
     name: "Extract: assistant pulls multiple field values from one message",
@@ -217,7 +154,7 @@ export const chatTestCases: ChatTestCase[] = [
     ],
   },
 
-  // ─── 8. Question flow order ─────────────────────────────────────
+  // ─── 6. Question flow order ─────────────────────────────────────
   {
     id: "question_flow_order",
     name: "Flow: assistant asks questions in sort_order across turns",

@@ -35,18 +35,6 @@ function PropertySummary({ property }: { property: ChatTestCase["property"] }) {
           ))}
         </ol>
       </div>
-      {property.rules && property.rules.length > 0 && (
-        <div>
-          <span className="text-gray-500">rules:</span>
-          <ul className="ml-4 list-disc">
-            {property.rules.map((r) => (
-              <li key={r.id}>
-                {r.kind}: {r.conditions.map((c) => `${c.fieldId} ${c.operator} ${c.value}`).join(" AND ")}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
       {property.aiInstructions && Object.keys(property.aiInstructions).length > 0 && (
         <div>
           <span className="text-gray-500">aiInstructions:</span>

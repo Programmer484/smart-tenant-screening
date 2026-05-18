@@ -229,7 +229,12 @@ export default function ApplicantsPage() {
                       <td className="px-4 py-3 font-medium text-[#1a2e2a]">
                         {extractName(s.answers) ?? <span className="text-[#1a2e2a]/30">Anonymous</span>}
                       </td>
-                      <td className="px-4 py-3 text-[#1a2e2a]/60">{s.listing_title}</td>
+                      <td className="px-4 py-3 text-[#1a2e2a]/60">
+                        {s.listing_title.startsWith("[Test] ") && (
+                          <span className="mr-1.5 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">test</span>
+                        )}
+                        {s.listing_title.replace(/^\[Test\] /, "")}
+                      </td>
                       <td className="px-4 py-3 text-[#1a2e2a]/60">{s.message_count}</td>
                       <td className="px-4 py-3 text-[#1a2e2a]/50">{formatDate(s.updated_at)}</td>
                       <td className="px-4 py-3">

@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
 import type { LandlordField, FieldValueKind } from "@/lib/landlord-field";
-import { normalizeRulesList, type LandlordRule } from "@/lib/landlord-rule";
 import type { Question } from "@/lib/question";
 import type { AiInstructions, PropertyLinks, PropertyVariable } from "@/lib/property";
 import { resolveAiInstructions, DEFAULT_LINKS } from "@/lib/property";
 import { createServiceClient } from "@/lib/supabase/service";
-import { evaluateRules, evalBranchCondition, describeViolation } from "@/lib/rule-engine";
+import { evalBranchCondition } from "@/lib/rule-engine";
 import { callClaude, ClaudeApiError } from "@/lib/anthropic";
 
 type IncomingMessage = { role: "user" | "assistant"; content: string };
@@ -85,19 +84,10 @@ function isValidExtraction(
 
 type WalkResult = {
   nextQuestion: Question | null;
-  /** Non-null when a branch outcome ends the interview early. */
-  branchOutcome: "reject" | "review" | null;
+  branchOutcome: "reject" | null;
+  triggerBranch?: any;
 };
 
-/**
- * Walks the question tree depth-first in sort_order and returns:
- * - The next question that still needs its fields answered, OR
- * - A branch-level outcome (reject/review) that overrides normal flow.
- *
- * "Continue" and "followups" outcomes keep the walk going;
- * sub-questions from a matched "followups" branch are walked before
- * moving on to the next sibling question.
- */
 function walkTree(
   qs: Question[],
   fields: LandlordField[],
@@ -113,14 +103,12 @@ function walkTree(
       return { nextQuestion: q, branchOutcome: null };
     }
 
-    // Question answered — find the first branch whose condition matches
     const matchingBranch = q.branches.find((b) =>
       evalBranchCondition(b.condition, fields, answers, variables),
     );
     const outcome = matchingBranch?.outcome ?? "continue";
 
-    if (outcome === "reject") return { nextQuestion: null, branchOutcome: "reject" };
-    if (outcome === "review") return { nextQuestion: null, branchOutcome: "review" };
+    if (outcome === "reject") return { nextQuestion: null, branchOutcome: "reject", triggerBranch: matchingBranch };
 
     if (outcome === "followups" && matchingBranch?.subQuestions.length) {
       const sub = walkTree(matchingBranch.subQuestions, fields, answers, variables);
@@ -131,6 +119,16 @@ function walkTree(
   return { nextQuestion: null, branchOutcome: null };
 }
 
+// ─── Variable interpolation ───────────────────────────────────────────────────
+
+function interpolateVars(text: string, variables: PropertyVariable[]): string {
+  if (!variables.length) return text;
+  return text.replace(/\{\{([^}]+)\}\}/g, (_, key) => {
+    const v = variables.find((x) => x.key === key.trim());
+    return v !== undefined ? v.value : `{{${key}}}`;
+  });
+}
+
 // ─── System prompt ────────────────────────────────────────────────────────────
 
 function buildSystemPrompt(
@@ -138,14 +136,15 @@ function buildSystemPrompt(
   description: string,
   fields: LandlordField[],
   questions: Question[],
-  rules: LandlordRule[],
   answers: Record<string, string>,
   ai: AiInstructions,
   variables: PropertyVariable[] = [],
+  overrideBranchOutcome?: "reject" | null,
 ): string {
-  const { nextQuestion } = walkTree(questions, fields, answers, variables);
+  const walked = walkTree(questions, fields, answers, variables);
+  const nextQuestion = walked.nextQuestion;
+  const branchOutcome = overrideBranchOutcome !== undefined ? overrideBranchOutcome : walked.branchOutcome;
 
-  // Field schema block
   const fieldSchemaBlock = fields.length > 0
     ? fields
         .map((f) => {
@@ -161,31 +160,13 @@ function buildSystemPrompt(
 
   const answeredFields = fields.filter((f) => answers[f.id] !== undefined);
 
-  // Rejection rules block (global eligibility — still enforced at end)
-  const rulesBlock = rules.some((r) => r.kind === "reject")
-    ? rules
-        .filter((r) => r.kind === "reject")
-        .map((r) => {
-          const parts = r.conditions
-            .map((c) => {
-              const f = fields.find((x) => x.id === c.fieldId);
-              return f ? `${f.label || f.id} ${c.operator} ${c.value}` : null;
-            })
-            .filter(Boolean);
-          return parts.length > 0 ? `  - Reject if: ${parts.join(" AND ")}` : null;
-        })
-        .filter(Boolean)
-        .join("\n")
-    : "  None defined.";
-
-  // Top-level interview flow block
   const questionsBlock = questions.length > 0
     ? [...questions]
         .sort((a, b) => a.sort_order - b.sort_order)
         .map((q, i) => {
           const allFilled = q.fieldIds.every((fid) => answers[fid] !== undefined);
           const status = allFilled ? "✅ done" : "❌ pending";
-          return `  ${i + 1}. "${q.text}" → fields: [${q.fieldIds.join(", ")}] ${status}`;
+          return `  ${i + 1}. "${interpolateVars(q.text, variables)}" → fields: [${q.fieldIds.join(", ")}] ${status}`;
         })
         .join("\n")
     : "  None defined.";
@@ -195,7 +176,6 @@ function buildSystemPrompt(
       ? "Do not answer questions about details not covered above. Redirect the applicant back to the screening questions."
       : "Only answer property questions using the property description above. If the information is not there, say you don't have that detail and suggest contacting the landlord. Never invent details.";
 
-  // Next question instruction — handle partial extraction within a question
   let nextInstruction: string;
   if (nextQuestion) {
     const missingFieldIds = nextQuestion.fieldIds.filter((fid) => answers[fid] === undefined);
@@ -216,8 +196,10 @@ function buildSystemPrompt(
           return f ? `${f.id} (${f.value_kind})` : fid;
         })
         .join(", ");
-      nextInstruction = `NEXT QUESTION: Ask exactly this: "${nextQuestion.text}". This question collects fields: [${fieldDetails}].`;
+      nextInstruction = `NEXT QUESTION: Ask exactly this: "${interpolateVars(nextQuestion.text, variables)}". This question collects fields: [${fieldDetails}].`;
     }
+  } else if (branchOutcome === "reject") {
+    nextInstruction = "Do not ask any more questions. A rejection message will follow in your instructions below.";
   } else {
     nextInstruction =
       "All screening questions have been collected. Do not ask any more questions. Thank the applicant and let them know their application is complete and will be reviewed.";
@@ -233,9 +215,6 @@ ${fieldSchemaBlock}
 
 INTERVIEW QUESTIONS (ask in this order):
 ${questionsBlock}
-
-STRICT RULES:
-${rulesBlock}
 
 STATUS: ${answeredFields.length}/${fields.length} fields collected.`;
 
@@ -258,8 +237,7 @@ STATUS: ${answeredFields.length}/${fields.length} fields collected.`;
 - Extract screening values from each message into the FIELD SCHEMA. Values: plain strings, numbers like "3500", booleans as "true"/"false".
 - ${nextInstruction}
 - NEVER invent new fields or ask about topics not in the FIELD SCHEMA.
-- NEVER deviate from the INTERVIEW QUESTIONS order, EXCEPT to follow up on missing fields from a previous question.
-- CRITICAL: NEVER evaluate applicant eligibility against the STRICT RULES yourself. The system backend evaluates them automatically.`;
+- NEVER deviate from the INTERVIEW QUESTIONS order, EXCEPT to follow up on missing fields from a previous question.`;
 
   if (ai.style) {
     prompt += `\n- CRITICAL STYLE ENFORCEMENT: You must adopt the following persona/style explicitly: "${ai.style.trim()}". Tone, formatting, and especially length constraints must be followed strictly on every single message.`;
@@ -292,7 +270,6 @@ export async function POST(req: Request) {
   const description = typeof rec.description === "string" ? rec.description.trim() : "";
   const fields      = Array.isArray(rec.fields)    ? (rec.fields as LandlordField[]) : [];
   const questions   = Array.isArray(rec.questions) ? (rec.questions as Question[]).map((q) => ({ ...q, branches: q.branches ?? [] })) : [];
-  const rules       = Array.isArray(rec.rules)     ? normalizeRulesList(rec.rules) : [];
   const answers     = rec.answers && typeof rec.answers === "object" ? (rec.answers as Record<string, string>) : {};
   const messages    = Array.isArray(rec.messages)  ? (rec.messages as IncomingMessage[]) : [];
   const links: PropertyLinks = { ...DEFAULT_LINKS, ...(rec.links && typeof rec.links === "object" ? rec.links as Partial<PropertyLinks> : {}) };
@@ -303,7 +280,6 @@ export async function POST(req: Request) {
 
   // ── Load server-authoritative session state ──
 
-  let clarificationPending    = false;
   let offTopicCount           = 0;
   let qualifiedFollowUpCount  = 0;
   let isQualified             = false;
@@ -312,11 +288,10 @@ export async function POST(req: Request) {
     const db = createServiceClient();
     const { data: ses } = await db
       .from("sessions")
-      .select("status, clarification_pending, off_topic_count, qualified_follow_up_count")
+      .select("status, off_topic_count, qualified_follow_up_count")
       .eq("id", sessionId)
       .maybeSingle();
     if (ses) {
-      clarificationPending   = ses.clarification_pending === true;
       offTopicCount          = ses.off_topic_count ?? 0;
       qualifiedFollowUpCount = ses.qualified_follow_up_count ?? 0;
       isQualified            = ses.status === "qualified";
@@ -329,7 +304,7 @@ export async function POST(req: Request) {
 
   // ── PHASE 1: Extract fields ──
 
-  const extractSystem = buildSystemPrompt(title, description, fields, questions, rules, answers, ai, variables);
+  const extractSystem = buildSystemPrompt(title, description, fields, questions, answers, ai, variables);
 
   let extractData;
   try {
@@ -349,7 +324,7 @@ export async function POST(req: Request) {
   const extractBlock = extractData.content?.find((b) => b.type === "tool_use");
   const extractInput = extractBlock?.input as { extracted?: Extraction[]; message_relevant?: boolean } | undefined;
 
-  const rawExtracted   = Array.isArray(extractInput?.extracted) ? extractInput.extracted : [];
+  const rawExtracted    = Array.isArray(extractInput?.extracted) ? extractInput.extracted : [];
   const messageRelevant = extractInput?.message_relevant !== false;
 
   // ── Validate extractions ──
@@ -365,17 +340,14 @@ export async function POST(req: Request) {
     extracted.push(ex);
   }
 
-  // ── Merge answers, evaluate rules and tree ──
+  // ── Merge answers and walk question tree ──
 
   const mergedAnswers = { ...answers };
   for (const { fieldId, value } of extracted) {
     mergedAnswers[fieldId] = value;
   }
 
-  const violations    = evaluateRules(rules, fields, mergedAnswers, variables);
-  const firstViolation = violations[0] ?? null;
-
-  const { nextQuestion, branchOutcome } = walkTree(questions, fields, mergedAnswers, variables);
+  const { nextQuestion, branchOutcome, triggerBranch } = walkTree(questions, fields, mergedAnswers, variables);
   const interviewDone = !nextQuestion && branchOutcome === null;
 
   // ── Update counters ──
@@ -392,7 +364,7 @@ export async function POST(req: Request) {
 
   // ── Determine session status ──
 
-  type SessionStatus = "in_progress" | "clarifying" | "rejected" | "review" | "qualified" | "completed";
+  type SessionStatus = "in_progress" | "rejected" | "qualified" | "completed";
   let sessionStatus: SessionStatus = "in_progress";
   let responseContext = "";
 
@@ -401,19 +373,8 @@ export async function POST(req: Request) {
     responseContext = `\n\nIMPORTANT — OFF-TOPIC REJECTION:\nThe applicant has sent ${offTopicCount} consecutive off-topic messages (limit: ${ai.offTopicLimit}). Close the conversation and state the reason.`;
   } else if (branchOutcome === "reject") {
     sessionStatus = "rejected";
-    responseContext = `\n\nIMPORTANT — REJECTION (BRANCH RULE):\nBased on the applicant's answers, they do not meet the requirements for this listing. ${ai.rejectionPrompt}`;
-  } else if (branchOutcome === "review") {
-    sessionStatus = "review";
-    responseContext = `\n\nIMPORTANT — MANUAL REVIEW:\nThis applicant's answers require manual review by the landlord. Let them know their application has been received and will be reviewed shortly. Close the screening conversation.`;
-  } else if (firstViolation) {
-    const req = describeViolation(firstViolation, fields);
-    if (clarificationPending) {
-      sessionStatus = "rejected";
-      responseContext = `\n\nIMPORTANT — REJECTION:\nRequirement not met: ${req}. They already had a chance to clarify.\n${ai.rejectionPrompt}`;
-    } else {
-      sessionStatus = "clarifying";
-      responseContext = `\n\nIMPORTANT — ELIGIBILITY CONCERN:\nRequirement not met: ${req}.\n${ai.clarificationPrompt}`;
-    }
+    const msg = triggerBranch?.customMessage || ai.rejectionPrompt;
+    responseContext = `\n\nIMPORTANT — REJECTION (BRANCH RULE):\nBased on the applicant's answers, they do not meet the requirements for this listing. ${msg}`;
   } else if (isQualified || interviewDone) {
     const limit = ai.qualifiedFollowUps;
 
@@ -445,7 +406,7 @@ export async function POST(req: Request) {
 
   // ── PHASE 2: Generate response ──
 
-  const respondSystem = buildSystemPrompt(title, description, fields, questions, rules, mergedAnswers, ai, variables) + responseContext;
+  const respondSystem = buildSystemPrompt(title, description, fields, questions, mergedAnswers, ai, variables, branchOutcome) + responseContext;
 
   let respondData;
   try {
@@ -472,13 +433,10 @@ export async function POST(req: Request) {
     sessionStatus = "rejected";
   }
 
-  const nextClarificationPending = sessionStatus === "clarifying";
-
   // ── Persist to Supabase ──
 
   const dbStatus =
     sessionStatus === "rejected"                                    ? "rejected" :
-    sessionStatus === "review"                                      ? "review"   :
     sessionStatus === "qualified" || sessionStatus === "completed"  ? "qualified" :
     "in_progress";
 
@@ -497,7 +455,6 @@ export async function POST(req: Request) {
           property_id: propertyId,
           off_topic_count: offTopicCount,
           qualified_follow_up_count: qualifiedFollowUpCount,
-          clarification_pending: nextClarificationPending,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "id" },
@@ -526,8 +483,6 @@ export async function POST(req: Request) {
     debugInfo: {
       sessionStatus,
       offTopicCount,
-      clarificationPending: nextClarificationPending,
-      firstViolation: firstViolation ? describeViolation(firstViolation, fields) : null,
       branchOutcome,
     },
   });

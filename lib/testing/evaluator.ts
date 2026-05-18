@@ -124,17 +124,15 @@ const CHAT_SYSTEM_PROMPT = `You are an expert AI evaluator for a tenant-facing c
 
 You will be given:
 1. Test Case Name and Description
-2. The Property Fixture (title, description, fields, questions, rules, AI instructions)
+2. The Property Fixture (title, description, fields, questions, AI instructions)
 3. The Conversation Transcript (each turn includes the user message, the assistant's reply, what fields were extracted, and the final session status for that turn)
 4. The Final Answers state (merged field values after all turns)
 5. Requirements (the strict criteria the test must meet)
 
 ## Session-status meanings
 - "in_progress" — interview still going
-- "clarifying" — applicant violated a rule but gets one chance to correct
-- "rejected" — applicant rejected (rule, branch reject, off-topic limit, or hostile)
-- "review" — flagged for manual landlord review
-- "qualified" — interview complete, no rules violated, follow-ups still allowed
+- "rejected" — applicant rejected (branch reject, off-topic limit, or hostile)
+- "qualified" — interview complete, all branch conditions passed, follow-ups still allowed
 - "completed" — interview complete and conversation closed
 
 ## Evaluation instructions
@@ -175,7 +173,6 @@ export async function evaluateChatTranscript(
     description: p.description ?? null,
     fields: p.fields,
     questions: p.questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds, sort_order: q.sort_order, branches: q.branches })),
-    rules: p.rules ?? [],
     variables: p.variables ?? [],
     aiInstructions: p.aiInstructions ?? {},
   }, null, 2);

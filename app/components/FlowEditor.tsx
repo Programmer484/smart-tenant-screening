@@ -1,12 +1,14 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 import { FieldPickerPopover } from "@/app/components/FieldPickerPopover";
 import type { Question, Branch, BranchOutcome } from "@/lib/question";
 import type { LandlordField } from "@/lib/landlord-field";
 import { OPERATORS_BY_KIND, defaultOperatorForKind, defaultValueForKind } from "@/lib/landlord-rule";
 import type { PropertyVariable } from "@/lib/property";
 import { VariablePickerPopover } from "@/app/components/VariablePickerPopover";
+import { generateId } from "@/lib/id-utils";
+import { describeCondition } from "@/lib/condition-utils";
 
 // ─── Navigation types ────────────────────────────────────────────────────────
 
@@ -24,8 +26,6 @@ type TreeItem = {
 };
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
-
-function genId() { return Math.random().toString(36).slice(2, 9); }
 
 function toRoman(n: number): string {
   const map: [number, string][] = [
@@ -58,6 +58,19 @@ function flattenQuestions(qs: Question[]): Question[] {
   }
   walk(qs);
   return out;
+}
+
+function findPathToQuestion(qs: Question[], targetId: string, currentPath: NavPath = []): NavPath | null {
+  for (const q of qs) {
+    if (q.id === targetId) return [...currentPath, { questionId: q.id }];
+    for (const b of q.branches) {
+      if (b.outcome === "followups") {
+        const found = findPathToQuestion(b.subQuestions, targetId, [...currentPath, { questionId: q.id, branchId: b.id }]);
+        if (found) return found;
+      }
+    }
+  }
+  return null;
 }
 
 function getAtPath(rootQs: Question[], path: NavPath): Question | null {
@@ -138,24 +151,6 @@ function buildTree(
   return items;
 }
 
-// ─── Branch label helpers ─────────────────────────────────────────────────────
-
-const OP_SHORT: Record<string, string> = {
-  "==": "is", "!=": "is not", ">": ">", ">=": "≥", "<": "<", "<=": "≤",
-};
-
-function describeBranch(branch: Branch, fields: LandlordField[]): string {
-  const { fieldId, operator, value } = branch.condition;
-  const field = fields.find((f) => f.id === fieldId);
-  const label = field?.label ?? fieldId;
-  if (field?.value_kind === "boolean") {
-    const isYes = value === "true";
-    const expected = operator === "!=" ? !isYes : isYes;
-    return `${label} ${expected ? "Yes" : "No"}`;
-  }
-  return `${label} ${OP_SHORT[operator] ?? operator} ${value}`;
-}
-
 // ─── Outcome config ──────────────────────────────────────────────────────────
 
 type OutcomeCfg = {
@@ -168,7 +163,6 @@ type OutcomeCfg = {
 const OUTCOME_CFG: Record<BranchOutcome, OutcomeCfg> = {
   continue:  { label: "Continue",       icon: "↓", iconCls: "bg-black/5 text-foreground/70",      activeCls: "bg-[#f7f9f8] border-foreground/20 text-foreground/70" },
   followups: { label: "Add follow-ups", icon: "+", iconCls: "bg-teal-50 text-teal-700",            activeCls: "bg-teal-50 border-teal-300 text-teal-800" },
-  review:    { label: "Manual review",  icon: "!", iconCls: "bg-amber-50 text-amber-700",          activeCls: "bg-amber-50 border-amber-300 text-amber-800" },
   reject:    { label: "Reject",         icon: "×", iconCls: "bg-red-50 text-red-600",              activeCls: "bg-red-50 border-red-300 text-red-700" },
 };
 
@@ -483,16 +477,20 @@ export default function FlowEditor({
   questions,
   fields,
   customVariables = [],
+  aiInstructions,
   onChange,
   onCreateField,
   onGenerateTargeted,
+  externalFocus,
 }: {
   questions: Question[];
   fields: LandlordField[];
   customVariables?: PropertyVariable[];
+  aiInstructions?: { rejectionPrompt?: string };
   onChange: (qs: Question[]) => void;
   onCreateField?: (label: string) => string;
   onGenerateTargeted?: (prompt: string, question: Question) => Promise<{ updatedQuestion?: Question }>;
+  externalFocus?: { id: string; target: { questionId?: string; branchId?: string } } | null;
 }) {
   const [focusedPath, setFocusedPath] = useState<NavPath>([]);
   const [activeBranchId, setActiveBranchId] = useState<string | null>(null);
@@ -506,6 +504,30 @@ export default function FlowEditor({
   const [varPickerAnchor, setVarPickerAnchor] = useState<DOMRect | null>(null);
   const [aiEditPrompt, setAiEditPrompt] = useState("");
   const [isGeneratingTargeted, setIsGeneratingTargeted] = useState(false);
+  const [dragSubIdx, setDragSubIdx] = useState<number | null>(null);
+  const [dragOverSubIdx, setDragOverSubIdx] = useState<number | null>(null);
+  const sidebarRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!externalFocus?.target?.questionId) return;
+    const path = findPathToQuestion(questions, externalFocus.target.questionId);
+    if (!path) return;
+    setFocusedPath(path);
+    const branchId = externalFocus.target.branchId;
+    if (branchId) {
+      setActiveBranchId(branchId);
+    } else {
+      const q = getAtPath(questions, path);
+      setActiveBranchId(q?.branches[0]?.id ?? null);
+    }
+    requestAnimationFrame(() => {
+      const qid = externalFocus.target.questionId!;
+      const item = sidebarRef.current?.querySelector(`[data-qid="${qid}"]`);
+      item?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      questionInputRef.current?.focus();
+      questionInputRef.current?.select();
+    });
+  }, [externalFocus]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const focusedIds = new Set(focusedPath.map((s) => s.questionId));
   const treeItems = buildTree(questions, [], focusedPath, [], 0);
@@ -574,7 +596,7 @@ export default function FlowEditor({
   // ── Actions ─────────────────────────────────────────────────────────────────
 
   function addTopLevelQuestion() {
-    const newQ: Question = { id: `q_${genId()}`, text: "", fieldIds: [], sort_order: questions.length, branches: [] };
+    const newQ: Question = { id: `q_${generateId()}`, text: "", fieldIds: [], sort_order: questions.length, branches: [] };
     onChange([...questions, newQ]);
     setFocusedPath([{ questionId: newQ.id }]);
     setActiveBranchId(null);
@@ -643,7 +665,7 @@ export default function FlowEditor({
     const f = fields.find((fi) => fi.id === focusedQuestion.fieldIds[0]);
     if (!f) return;
     const branch: Branch = {
-      id: `b_${genId()}`,
+      id: `b_${generateId()}`,
       condition: { fieldId: f.id, operator: defaultOperatorForKind(f.value_kind), value: defaultValueForKind(f.value_kind) },
       outcome: "continue",
       subQuestions: [],
@@ -659,7 +681,7 @@ export default function FlowEditor({
 
   function addSubQuestion(branchId: string) {
     if (!focusedQuestion) return;
-    const newQ: Question = { id: `q_${genId()}`, text: "", fieldIds: [], sort_order: 0, branches: [] };
+    const newQ: Question = { id: `q_${generateId()}`, text: "", fieldIds: [], sort_order: 0, branches: [] };
     const lastStep = focusedPath[focusedPath.length - 1];
     updateBranch(branchId, (b) => ({ ...b, subQuestions: [...b.subQuestions, newQ] }));
     setFocusedPath([...focusedPath.slice(0, -1), { ...lastStep, branchId }, { questionId: newQ.id }]);
@@ -681,13 +703,14 @@ export default function FlowEditor({
       {/* ── Left: flow tree ──────────────────────────────────────────────── */}
       <div className="rounded-lg border border-black/8 bg-white p-2">
         <p className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-wider text-foreground/70">Flow</p>
-        <div className="space-y-px">
+        <div ref={sidebarRef} className="space-y-px">
           {treeItems.map((item) => {
             const isCurrent = pathsEqual(item.path, focusedPath);
             const isOpen = item.hasChildren && focusedIds.has(item.question.id);
             return (
               <div
                 key={item.path.map((s) => s.questionId).join(".")}
+                data-qid={item.question.id}
                 role="button"
                 tabIndex={0}
                 onClick={() => {
@@ -881,10 +904,12 @@ export default function FlowEditor({
                 {focusedQuestion.branches.map((branch) => {
                   const cfg = OUTCOME_CFG[branch.outcome];
                   const isActive = activeBranchId === branch.id;
+                  const fullLabel = describeCondition(branch.condition, fields);
                   return (
                     <button
                       key={branch.id}
                       type="button"
+                      title={fullLabel}
                       onClick={() => setActiveBranchId(branch.id)}
                       className={`flex items-center gap-1.5 rounded-t-md border border-b-0 px-3 py-1.5 text-[11px] transition-colors ${
                         isActive
@@ -896,7 +921,7 @@ export default function FlowEditor({
                         {cfg.icon}
                       </span>
                       <span className="max-w-[160px] truncate text-[11px]">
-                        {describeBranch(branch, fields)}
+                        {fullLabel}
                       </span>
                     </button>
                   );
@@ -905,11 +930,15 @@ export default function FlowEditor({
                   type="button"
                   onClick={addBranch}
                   disabled={focusedQuestion.fieldIds.length === 0}
-                  title={focusedQuestion.fieldIds.length === 0 ? "Link a field to this question first" : undefined}
                   className="rounded-t-md border border-b-0 border-dashed border-foreground/15 px-3 py-1.5 text-[11px] text-foreground/35 hover:text-foreground/60 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   + add branch
                 </button>
+                {focusedQuestion.fieldIds.length === 0 && (
+                  <span className="self-center text-[10px] text-foreground/30">
+                    — link a field first
+                  </span>
+                )}
               </div>
 
               {/* Active branch body */}
@@ -949,10 +978,35 @@ export default function FlowEditor({
                         {/* Sub-questions (followups) placed directly inside the "then" block for sentence flow */}
                         {activeBranch.outcome === "followups" && (
                           <div className="flex flex-col gap-2">
-                            {activeBranch.subQuestions.map((sq) => {
+                            {activeBranch.subQuestions.map((sq, sqIdx) => {
                               const sqItem = treeItems.find((t) => t.question.id === sq.id);
+                              const isDraggingOver = dragOverSubIdx === sqIdx && dragSubIdx !== sqIdx;
                               return (
-                                <div key={sq.id} className="flex items-center gap-2 rounded-lg border border-teal-100 bg-teal-50/40 p-2.5 max-w-xl">
+                                <div
+                                  key={sq.id}
+                                  draggable
+                                  onDragStart={() => setDragSubIdx(sqIdx)}
+                                  onDragOver={(e) => { e.preventDefault(); setDragOverSubIdx(sqIdx); }}
+                                  onDrop={() => {
+                                    if (dragSubIdx === null || dragSubIdx === sqIdx) { setDragSubIdx(null); setDragOverSubIdx(null); return; }
+                                    const sqs = [...activeBranch.subQuestions];
+                                    const [moved] = sqs.splice(dragSubIdx, 1);
+                                    sqs.splice(sqIdx, 0, moved);
+                                    updateBranch(activeBranch.id, (b) => ({ ...b, subQuestions: sqs }));
+                                    setDragSubIdx(null); setDragOverSubIdx(null);
+                                  }}
+                                  onDragEnd={() => { setDragSubIdx(null); setDragOverSubIdx(null); }}
+                                  className={`flex items-center gap-2 rounded-lg border p-2.5 max-w-xl transition-colors ${
+                                    isDraggingOver ? "border-teal-400 bg-teal-50" : "border-teal-100 bg-teal-50/40"
+                                  } ${dragSubIdx === sqIdx ? "opacity-40" : ""}`}
+                                >
+                                  <span className="shrink-0 cursor-grab text-foreground/25 hover:text-foreground/50 active:cursor-grabbing">
+                                    <svg width="12" height="14" viewBox="0 0 12 14" fill="currentColor" aria-hidden>
+                                      <circle cx="3" cy="2.5" r="1.2"/><circle cx="9" cy="2.5" r="1.2"/>
+                                      <circle cx="3" cy="7" r="1.2"/><circle cx="9" cy="7" r="1.2"/>
+                                      <circle cx="3" cy="11.5" r="1.2"/><circle cx="9" cy="11.5" r="1.2"/>
+                                    </svg>
+                                  </span>
                                   <span className="w-6 shrink-0 font-mono text-[10px] text-teal-600">
                                     {sqItem?.label ?? "—"}
                                   </span>
@@ -976,6 +1030,19 @@ export default function FlowEditor({
                             >
                               + Add follow-up question
                             </button>
+                          </div>
+                        )}
+
+                        {activeBranch.outcome === "reject" && (
+                          <div className="mt-1 flex flex-col gap-1.5 rounded-md border border-red-100 bg-red-50/50 p-2.5 text-xs text-red-800">
+                            <span className="font-semibold opacity-70">AI Response:</span>
+                            <textarea
+                              rows={2}
+                              value={activeBranch.customMessage ?? ""}
+                              onChange={(e) => updateBranch(activeBranch.id, (b) => ({ ...b, customMessage: e.target.value }))}
+                              placeholder={aiInstructions?.rejectionPrompt || "Message..."}
+                              className="w-full resize-none rounded-md border border-red-200/50 bg-white px-2 py-1.5 text-foreground placeholder:text-foreground/40 focus:border-red-300 focus:outline-none focus:ring-1 focus:ring-red-300/50"
+                            />
                           </div>
                         )}
                       </div>

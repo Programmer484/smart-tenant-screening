@@ -1,17 +1,11 @@
 import type { LandlordField } from "@/lib/landlord-field";
 import type { Question } from "@/lib/question";
-import type { LandlordRule } from "@/lib/landlord-rule";
 import type { PropertyVariable } from "@/lib/property";
 
 export type AIQuestionOutput = {
   newFields?: LandlordField[];
   questions?: Question[];
   deletedQuestionIds?: string[];
-
-  // Rule generation fields (optional, if we want to support both)
-  newRules?: LandlordRule[];
-  modifiedRules?: LandlordRule[];
-  deletedRuleIds?: string[];
 
   prompts?: {
     system?: string;
