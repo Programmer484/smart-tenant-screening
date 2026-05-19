@@ -1,13 +1,15 @@
 "use client";
 
-import { useMemo, useRef, useState, useEffect } from "react";
+import { useMemo, useRef, useState, useEffect, Fragment } from "react";
 import { FieldPickerPopover } from "@/app/components/FieldPickerPopover";
+import { VariablePickerPopover } from "@/app/components/VariablePickerPopover";
 import type { Question, Branch, BranchOutcome } from "@/lib/question";
 import type { LandlordField } from "@/lib/landlord-field";
 import { OPERATORS_BY_KIND, defaultOperatorForKind, defaultValueForKind } from "@/lib/landlord-rule";
 import type { PropertyVariable } from "@/lib/property";
 import { generateId } from "@/lib/id-utils";
 import { describeCondition, resolveVarTokens } from "@/lib/condition-utils";
+import TextareaAutosize from "react-textarea-autosize";
 
 // ─── Navigation types ────────────────────────────────────────────────────────
 
@@ -186,7 +188,7 @@ function QuestionChipOverlay({ text, variables }: { text: string; variables: Pro
     <>
       {parts.map((p, i) =>
         p.kind === "var" ? (
-          <span key={i} className="inline-flex items-center rounded border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-sm font-medium text-violet-700 leading-none">
+          <span key={i} className="inline whitespace-nowrap align-baseline rounded border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-sm font-medium text-violet-700">
             {p.content}
           </span>
         ) : (
@@ -434,7 +436,10 @@ export default function FlowEditor({
   const [fieldPickerOpen, setFieldPickerOpen] = useState(false);
   const [fieldPickerAnchor, setFieldPickerAnchor] = useState<DOMRect | null>(null);
   const fieldPickerBtnRef = useRef<HTMLButtonElement>(null);
-  const questionInputRef = useRef<HTMLInputElement>(null);
+  const [varPickerOpen, setVarPickerOpen] = useState(false);
+  const [varPickerAnchor, setVarPickerAnchor] = useState<DOMRect | null>(null);
+  const varPickerBtnRef = useRef<HTMLButtonElement>(null);
+  const questionInputRef = useRef<HTMLTextAreaElement>(null);
   const questionCursorRef = useRef<number>(0);
   const [questionFocused, setQuestionFocused] = useState(false);
   const [aiEditPrompt, setAiEditPrompt] = useState("");
@@ -734,20 +739,20 @@ export default function FlowEditor({
                   const showOverlay = hasTokens && !questionFocused;
                   return (
                     <div className="relative">
-                      <input
+                      <TextareaAutosize
                         ref={questionInputRef}
-                        type="text"
+                        minRows={1}
                         value={focusedQuestion.text}
                         onChange={(e) => mutate((q) => ({ ...q, text: e.target.value }))}
                         onSelect={() => { questionCursorRef.current = questionInputRef.current?.selectionStart ?? 0; }}
                         onFocus={() => setQuestionFocused(true)}
                         onBlur={() => { setQuestionFocused(false); questionCursorRef.current = questionInputRef.current?.selectionStart ?? questionCursorRef.current; }}
                         placeholder="Type the question the AI will ask…"
-                        className={`w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-4 py-3 text-lg placeholder:text-foreground/25 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20 ${showOverlay ? "text-transparent caret-transparent" : "text-foreground"}`}
+                        className={`w-full resize-none rounded-lg border border-foreground/10 bg-[#f7f9f8] px-4 py-3 text-base placeholder:text-foreground/25 focus:border-teal-700/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20 ${showOverlay ? "text-transparent caret-transparent" : "text-foreground"}`}
                       />
                       {showOverlay && (
                         <div
-                          className="pointer-events-none absolute inset-0 flex flex-wrap items-center gap-x-1 gap-y-0.5 overflow-hidden rounded-lg border border-transparent bg-[#f7f9f8] px-4 py-3 text-lg"
+                          className="pointer-events-none absolute inset-0 overflow-hidden rounded-lg border border-transparent bg-[#f7f9f8] px-4 py-3 text-base break-words whitespace-pre-wrap"
                           aria-hidden
                         >
                           <QuestionChipOverlay text={focusedQuestion.text} variables={customVariables} />
@@ -799,13 +804,7 @@ export default function FlowEditor({
                       selectedIds={focusedQuestion.fieldIds}
                       lockedFieldIds={lockedFieldIds}
                       onChange={(next) => {
-                        const kept = new Set(
-                          (focusedQuestion?.branches ?? [])
-                            .filter((b) => next.includes(b.condition.fieldId))
-                            .map((b) => b.id),
-                        );
-                        mutate((q) => ({ ...q, fieldIds: next, branches: q.branches.filter((b) => kept.has(b.id)) }));
-                        if (activeBranchId && !kept.has(activeBranchId)) setActiveBranchId(null);
+                        mutate((q) => ({ ...q, fieldIds: next }));
                       }}
                       onClose={() => setFieldPickerOpen(false)}
                       onCreateField={onCreateField ? (label) => {
@@ -815,22 +814,39 @@ export default function FlowEditor({
                     />
                   </div>
 
-                  {/* Insert variable chips */}
+                  {/* Insert variable picker */}
                   {customVariables.length > 0 && (
-                    <div className="flex items-center gap-1">
-                      <span className="text-[10px] text-foreground/25">Insert</span>
-                      {customVariables.map((v, i) => (
-                        <button
-                          key={v.id || i}
-                          type="button"
-                          onClick={() => insertVarIntoQuestion(`{{${v.id}}}`)}
-                          className="rounded-full border border-violet-200/70 bg-violet-50/60 px-2 py-px text-[10px] font-medium text-violet-600/80 transition-colors hover:bg-violet-100 hover:text-violet-700"
-                          title={`Insert {{${v.id}}} at cursor`}
-                        >
-                          {v.label || v.id}
-                        </button>
-                      ))}
+                    <div className="relative">
+                      <button
+                        ref={varPickerBtnRef}
+                        type="button"
+                        onClick={() => { setVarPickerAnchor(varPickerBtnRef.current?.getBoundingClientRect() ?? null); setVarPickerOpen(true); }}
+                        className="rounded border border-violet-200/70 bg-violet-50/60 px-2 py-0.5 text-[11px] font-medium text-violet-600/80 transition-colors hover:bg-violet-100 hover:text-violet-700"
+                      >
+                        Insert variable
+                      </button>
+                      <VariablePickerPopover
+                        open={varPickerOpen}
+                        anchorRect={varPickerAnchor}
+                        variables={customVariables}
+                        onInsert={(token) => insertVarIntoQuestion(token)}
+                        onClose={() => setVarPickerOpen(false)}
+                      />
                     </div>
+                  )}
+                  {/* Recapture toggle — shown only when question re-uses a field captured upstream */}
+                  {focusedQuestion.fieldIds.some((fid) =>
+                    questions.some((q) => q.id !== focusedQuestion.id && q.fieldIds.includes(fid))
+                  ) && (
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={!!focusedQuestion.recapture}
+                        onChange={(e) => mutate((q) => ({ ...q, recapture: e.target.checked || undefined }))}
+                        className="h-3.5 w-3.5 rounded border-foreground/20 accent-teal-700"
+                      />
+                      <span className="text-[11px] text-foreground/50">Re-ask even if already answered</span>
+                    </label>
                   )}
                 </div>
               </div>
@@ -848,10 +864,10 @@ export default function FlowEditor({
                       type="button"
                       title={fullLabel}
                       onClick={() => setActiveBranchId(branch.id)}
-                      className={`flex items-center gap-1.5 rounded-t-md border border-b-0 px-3 py-1.5 text-[11px] transition-colors ${
+                      className={`relative flex items-center gap-1.5 rounded-t-md border px-3 py-1.5 text-[11px] transition-colors ${
                         isActive
-                          ? "border-teal-300 bg-teal-50 font-medium text-teal-900 shadow-sm"
-                          : "border-black/8 bg-[#f7f9f8] text-foreground/50 hover:bg-white hover:text-foreground/70"
+                          ? "border-black/10 border-b-white bg-white font-medium text-foreground shadow-sm z-10"
+                          : "border-black/8 border-b-transparent bg-[#f7f9f8] text-foreground/50 hover:bg-white hover:text-foreground/70"
                       }`}
                     >
                       <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-bold ${cfg.iconCls}`}>
@@ -880,13 +896,13 @@ export default function FlowEditor({
 
               {/* Active branch body */}
               {activeBranch ? (
-                <div className="overflow-hidden rounded-b-lg rounded-tr-lg border border-teal-200/70 bg-teal-50/20">
+                <div className="overflow-hidden rounded-b-lg rounded-tr-lg border border-black/10 bg-white -mt-px relative z-0">
 
                   {/* Sentence builder */}
                   <div className="p-4 flex flex-col gap-4">
                     <ConditionEditor
                       condition={activeBranch.condition}
-                      fields={fields.filter((f) => focusedQuestion.fieldIds.includes(f.id))}
+                      fields={fields}
                       customVars={customVariables}
                       onChange={(c) => updateBranch(activeBranch.id, (b) => ({ ...b, condition: c }))}
                     />
@@ -970,16 +986,35 @@ export default function FlowEditor({
 
                     {/* Rejection message */}
                     {activeBranch.outcome === "reject" && (
-                      <div className="flex flex-col gap-1.5 rounded-md border border-foreground/10 bg-foreground/[0.02] p-2.5">
-                        <span className="text-[11px] text-foreground/40">Message shown to applicant</span>
-                        <textarea
-                          rows={2}
-                          value={activeBranch.customMessage ?? ""}
-                          onChange={(e) => updateBranch(activeBranch.id, (b) => ({ ...b, customMessage: e.target.value }))}
-                          placeholder={aiInstructions?.rejectionPrompt || "Explain why the applicant doesn't qualify…"}
-                          className="w-full resize-none rounded-md border border-foreground/10 bg-white px-2 py-1.5 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/30 focus:outline-none focus:ring-1 focus:ring-teal-700/10"
-                        />
-                      </div>
+                      activeBranch.customMessage != null ? (
+                        <div className="flex flex-col gap-1.5 rounded-md border border-foreground/10 bg-foreground/[0.02] p-2.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[11px] text-foreground/40">Custom message</span>
+                            <button 
+                              type="button" 
+                              onClick={() => updateBranch(activeBranch.id, (b) => { const next = {...b}; delete next.customMessage; return next; })}
+                              className="text-[10px] text-foreground/35 hover:text-red-500"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                          <TextareaAutosize
+                            minRows={1}
+                            value={activeBranch.customMessage}
+                            onChange={(e) => updateBranch(activeBranch.id, (b) => ({ ...b, customMessage: e.target.value }))}
+                            placeholder={aiInstructions?.rejectionPrompt || "Explain why the applicant doesn't qualify…"}
+                            className="w-full resize-none rounded-md border border-foreground/10 bg-white px-2 py-1.5 text-sm text-foreground placeholder:text-foreground/30 focus:border-teal-700/30 focus:outline-none focus:ring-1 focus:ring-teal-700/10"
+                          />
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => updateBranch(activeBranch.id, (b) => ({ ...b, customMessage: "" }))}
+                          className="w-fit text-xs text-foreground/40 underline-offset-2 hover:text-foreground/70 hover:underline"
+                        >
+                          + Add custom message
+                        </button>
+                      )
                     )}
                   </div>
 

@@ -90,7 +90,6 @@ export default function PropertySetupPage() {
 
   const [questionsPrompt, setQuestionsPrompt] = useState("");
   const [questionsAiOpen, setQuestionsAiOpen] = useState(false);
-  const [aiBehaviorPrompt, setAiBehaviorPrompt] = useState("");
   const [clarifyingQuestions, setClarifyingQuestions] = useState<string[]>([]);
   const [clarifyingAnswers, setClarifyingAnswers] = useState<string[]>([]);
   const [isRecording, setIsRecording] = useState(false);
@@ -344,7 +343,7 @@ export default function PropertySetupPage() {
   }, [id, supabase]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function publishProperty() {
-    const issues = validatePublishableProperty({ fields, questions });
+    const issues = validatePublishableProperty({ fields, questions, variables });
     setPublishIssues(issues);
     if (issues.length > 0) {
       toast.error(`Fix ${issues.length} issue${issues.length === 1 ? "" : "s"} before publishing`);
@@ -457,7 +456,7 @@ export default function PropertySetupPage() {
           id: q.id,
           text: q.text,
           fieldIds: q.fieldIds,
-          branches: q.branches.map((b) => ({ condition: b.condition, outcome: b.outcome })),
+          branches: q.branches.map((b) => ({ condition: b.condition, outcome: b.outcome, customMessage: b.customMessage })),
         })),
         variables,
         links,
@@ -521,7 +520,7 @@ export default function PropertySetupPage() {
               id: q.id,
               text: q.text,
               fieldIds: q.fieldIds,
-              branches: q.branches.map((b) => ({ condition: b.condition, outcome: b.outcome })),
+              branches: q.branches.map((b) => ({ condition: b.condition, outcome: b.outcome, customMessage: b.customMessage })),
             })),
             variables,
           }),
@@ -621,20 +620,6 @@ export default function PropertySetupPage() {
       console.error("[generateTargeted]", err);
       toast.error("Generation failed — please try again");
       return {};
-    }
-  }
-
-  async function handleGenerateAiBehavior(prompt: string) {
-    if (!prompt.trim()) return;
-    try {
-      setLoadingPhase("questions");
-      const ok = await runGeneration(`Update the AI behavior settings: ${prompt}`);
-      if (ok) setAiBehaviorPrompt("");
-    } catch (err) {
-      console.error("[generateAiBehavior]", err);
-      toast.error("Generation failed — please try again");
-    } finally {
-      setLoadingPhase(null);
     }
   }
 
@@ -1311,39 +1296,66 @@ export default function PropertySetupPage() {
               </div>
             )}
 
-            {/* ── AI Behavior Tab ── */}
+                        {/* ── AI Behavior Tab ── */}
             {activeTab === "AI Behavior" && (
-              <div className="space-y-6">
+              <div className="space-y-5">
+
+                {/* Tone & Style */}
                 <div className="space-y-4 rounded-lg border border-foreground/8 bg-[#f7f9f8] p-5">
                   <div>
-                    <h3 className="text-sm font-medium text-foreground/80">Opening greeting</h3>
-                    <p className="mt-0.5 text-[11px] text-foreground/55">Instructions for how the AI should open the conversation. Leave blank to use the default.</p>
+                    <h3 className="text-sm font-medium text-foreground/80">Tone &amp; style</h3>
+                    <p className="mt-0.5 text-[11px] text-foreground/55">How the AI should communicate throughout the screening.</p>
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-medium text-foreground/60">When the applicant&apos;s name is known</label>
-                    <p className="text-[11px] text-foreground/55">The URL will contain <code className="font-mono text-[10px]">?name=…</code>. Use <code className="font-mono text-[10px]">{"{name}"}</code> to include it.</p>
-                    <textarea
-                      rows={2}
-                      value={aiInstructions.greetingWithName}
-                      onChange={(e) => setAiInstructions((prev) => ({ ...prev, greetingWithName: e.target.value }))}
-                      placeholder={`e.g. Greet {name} warmly by name, briefly introduce yourself, and ask about their move-in date.`}
-                      className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-teal-700/60 focus:outline-none"
-                    />
+                    <label className="text-xs font-medium text-foreground/60">Style instructions</label>
+                    <textarea rows={3} value={aiInstructions.style} onChange={(e) => setAiInstructions((prev) => ({ ...prev, style: e.target.value }))} placeholder="e.g. Be concise and friendly. Use a professional tone. Avoid long paragraphs." className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-teal-700/60 focus:outline-none" />
                   </div>
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium text-foreground/60">When the applicant&apos;s name is unknown</label>
-                    <textarea
-                      rows={2}
-                      value={aiInstructions.greetingWithoutName}
-                      onChange={(e) => setAiInstructions((prev) => ({ ...prev, greetingWithoutName: e.target.value }))}
-                      placeholder="e.g. Very briefly introduce yourself and ask for the applicant's name first."
-                      className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-teal-700/60 focus:outline-none"
-                    />
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-medium text-foreground/60">Example conversations</label>
+                      <button type="button" onClick={() => setAiInstructions((prev) => ({ ...prev, examples: [...(prev.examples ?? []), { user: "", assistant: "" }] }))} className="text-xs text-teal-700 hover:underline">
+                        + Add example
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-foreground/55">Show the AI how to respond in specific scenarios.</p>
+                    {(aiInstructions.examples ?? []).length === 0 && (
+                      <p className="text-sm text-foreground/40">No examples yet.</p>
+                    )}
+                    {(aiInstructions.examples ?? []).map((ex, i) => (
+                      <div key={i} className="space-y-2 rounded-lg border border-foreground/8 bg-white p-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-semibold uppercase tracking-wider text-foreground/40">Example {i + 1}</span>
+                          <button type="button" onClick={() => setAiInstructions((prev) => ({ ...prev, examples: (prev.examples ?? []).filter((_, j) => j !== i) }))} className="text-xs text-foreground/50 hover:text-red-500">Remove</button>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs text-foreground/60">Applicant says:</label>
+                          <input type="text" value={ex.user} onChange={(e) => { const next = [...(aiInstructions.examples ?? [])]; next[i] = { ...next[i], user: e.target.value }; setAiInstructions((prev) => ({ ...prev, examples: next })); }} placeholder="e.g. Is the apartment pet-friendly?" className="w-full rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-1.5 text-sm focus:border-teal-700/60 focus:outline-none" />
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs text-foreground/60">AI responds:</label>
+                          <textarea rows={2} value={ex.assistant} onChange={(e) => { const next = [...(aiInstructions.examples ?? [])]; next[i] = { ...next[i], assistant: e.target.value }; setAiInstructions((prev) => ({ ...prev, examples: next })); }} placeholder="e.g. We do allow small pets with a $500 deposit. Do you have any pets?" className="w-full resize-none rounded-lg border border-foreground/10 bg-[#f7f9f8] px-3 py-1.5 text-sm focus:border-teal-700/60 focus:outline-none" />
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
+                {/* Screening responses */}
                 <div className="space-y-4 rounded-lg border border-foreground/8 bg-[#f7f9f8] p-5">
-                  <h3 className="text-sm font-medium text-foreground/80">Conversation controls</h3>
+                  <div>
+                    <h3 className="text-sm font-medium text-foreground/80">Screening responses</h3>
+                    <p className="mt-0.5 text-[11px] text-foreground/55">How the AI handles applicants who fail a screening rule.</p>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-medium text-foreground/60">Rejection</label>
+                    <p className="text-[11px] text-foreground/55">When the applicant's answer fails a screening rule.</p>
+                    <textarea rows={2} value={aiInstructions.rejectionPrompt} onChange={(e) => setAiInstructions((prev) => ({ ...prev, rejectionPrompt: e.target.value }))} placeholder="e.g. Let the applicant know they don't meet the requirement, state the reason, and close the conversation." className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-teal-700/60 focus:outline-none" />
+                  </div>
+                </div>
+
+                {/* Conversation */}
+                <div className="space-y-4 rounded-lg border border-foreground/8 bg-[#f7f9f8] p-5">
+                  <h3 className="text-sm font-medium text-foreground/80">Conversation</h3>
                   <div className="grid gap-4 sm:grid-cols-2">
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-foreground/60">Off-topic limit</label>
@@ -1356,10 +1368,9 @@ export default function PropertySetupPage() {
                       <input type="number" min={0} value={aiInstructions.qualifiedFollowUps ?? 3} onChange={(e) => setAiInstructions((prev) => ({ ...prev, qualifiedFollowUps: Math.max(0, parseInt(e.target.value) || 0) }))} className="w-24 rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm focus:border-teal-700/60 focus:outline-none" />
                     </div>
                   </div>
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium text-foreground/60">Unknown info handling</label>
-                    <p className="text-[11px] text-foreground/55">When an applicant asks about something not in the description.</p>
-                    <div className="flex gap-4 pt-1">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-foreground/60">When applicant asks about something not in the description</label>
+                    <div className="flex gap-4 pt-0.5">
                       <label className="flex items-center gap-2 text-sm text-foreground/70">
                         <input type="radio" name="unknownInfo" checked={(aiInstructions.unknownInfoBehavior ?? "deflect") === "deflect"} onChange={() => setAiInstructions((prev) => ({ ...prev, unknownInfoBehavior: "deflect" }))} className="accent-teal-700" />
                         Say &quot;I don&apos;t know, contact landlord&quot;
@@ -1372,56 +1383,26 @@ export default function PropertySetupPage() {
                   </div>
                 </div>
 
-                <div className="space-y-4 rounded-lg border border-foreground/8 bg-[#f7f9f8] p-5">
-                  <h3 className="text-sm font-medium text-foreground/80">Eligibility responses</h3>
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium text-foreground/60">First concern (clarification)</label>
-                    <p className="text-[11px] text-foreground/55">How the AI should respond when an applicant first fails a rule.</p>
-                    <textarea rows={2} value={aiInstructions.clarificationPrompt} onChange={(e) => setAiInstructions((prev) => ({ ...prev, clarificationPrompt: e.target.value }))} placeholder="e.g. Let the applicant know their answer doesn't meet the requirement and give them a chance to correct it." className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm text-foreground placeholder:text-foreground/70 focus:border-teal-700/60 focus:outline-none" />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-xs font-medium text-foreground/60">Confirmed rejection</label>
-                    <p className="text-[11px] text-foreground/55">How the AI should respond when an applicant still fails after clarification.</p>
-                    <textarea rows={2} value={aiInstructions.rejectionPrompt} onChange={(e) => setAiInstructions((prev) => ({ ...prev, rejectionPrompt: e.target.value }))} placeholder="e.g. Let the applicant know they don't meet the requirement, state the reason, and close the conversation." className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm text-foreground placeholder:text-foreground/70 focus:border-teal-700/60 focus:outline-none" />
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-foreground/80">Style instructions</label>
-                  <p className="text-xs text-foreground/60">Tell the AI how to behave — tone, formatting, how to handle specific situations.</p>
-                  <textarea rows={5} value={aiInstructions.style} onChange={(e) => setAiInstructions((prev) => ({ ...prev, style: e.target.value }))} placeholder="e.g. Be concise. Use a friendly but professional tone." className="w-full resize-none rounded-lg border border-foreground/10 bg-[#f7f9f8] px-4 py-3 text-sm text-foreground placeholder:text-foreground/70 focus:border-teal-700/60 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-700/20" />
-                </div>
-
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="text-sm font-medium text-foreground/80">Example conversations</label>
-                      <p className="text-xs text-foreground/60">Show the AI how you want it to respond in specific scenarios.</p>
+                {/* Opening greeting — collapsible, rarely changed */}
+                <details className="rounded-lg border border-foreground/8 bg-[#f7f9f8]">
+                  <summary className="flex cursor-pointer select-none items-center justify-between px-5 py-4">
+                    <span className="text-sm font-medium text-foreground/80">Opening greeting</span>
+                    <span className="text-[11px] text-foreground/40">optional</span>
+                  </summary>
+                  <div className="space-y-3 border-t border-foreground/6 px-5 pb-5 pt-4">
+                    <p className="text-[11px] text-foreground/55">Custom instructions for how the AI opens the conversation. Leave blank to use the default.</p>
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-foreground/60">When the applicant&apos;s name is known</label>
+                      <p className="text-[11px] text-foreground/55">The URL will contain <code className="font-mono text-[10px]">?name=…</code>. Use <code className="font-mono text-[10px]">{"{name}"}</code> to include it.</p>
+                      <textarea rows={2} value={aiInstructions.greetingWithName} onChange={(e) => setAiInstructions((prev) => ({ ...prev, greetingWithName: e.target.value }))} placeholder="e.g. Greet {name} warmly by name, briefly introduce yourself, and ask about their move-in date." className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-teal-700/60 focus:outline-none" />
                     </div>
-                    <button type="button" onClick={() => setAiInstructions((prev) => ({ ...prev, examples: [...(prev.examples ?? []), { user: "", assistant: "" }] }))} className="text-sm text-teal-700 hover:underline">
-                      + Add example
-                    </button>
-                  </div>
-                  {(aiInstructions.examples ?? []).length === 0 && (
-                    <p className="text-sm text-foreground/70">No examples yet.</p>
-                  )}
-                  {(aiInstructions.examples ?? []).map((ex, i) => (
-                    <div key={i} className="space-y-2 rounded-lg border border-foreground/8 bg-[#f7f9f8] p-4">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-semibold uppercase tracking-wider text-foreground/55">Example {i + 1}</span>
-                        <button type="button" onClick={() => setAiInstructions((prev) => ({ ...prev, examples: (prev.examples ?? []).filter((_, j) => j !== i) }))} className="text-xs text-foreground/70 hover:text-red-500">Remove</button>
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-xs text-foreground/70">Tenant says:</label>
-                        <input type="text" value={ex.user} onChange={(e) => { const next = [...(aiInstructions.examples ?? [])]; next[i] = { ...next[i], user: e.target.value }; setAiInstructions((prev) => ({ ...prev, examples: next })); }} placeholder="e.g. Is the apartment pet-friendly?" className="w-full rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm focus:border-teal-700/60 focus:outline-none" />
-                      </div>
-                      <div>
-                        <label className="mb-1 block text-xs text-foreground/70">AI should respond:</label>
-                        <textarea rows={2} value={ex.assistant} onChange={(e) => { const next = [...(aiInstructions.examples ?? [])]; next[i] = { ...next[i], assistant: e.target.value }; setAiInstructions((prev) => ({ ...prev, examples: next })); }} placeholder="e.g. We do allow small pets with a $500 deposit. Do you have any pets?" className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm focus:border-teal-700/60 focus:outline-none" />
-                      </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-foreground/60">When the applicant&apos;s name is unknown</label>
+                      <textarea rows={2} value={aiInstructions.greetingWithoutName} onChange={(e) => setAiInstructions((prev) => ({ ...prev, greetingWithoutName: e.target.value }))} placeholder="e.g. Very briefly introduce yourself and ask for the applicant's name first." className="w-full resize-none rounded-lg border border-foreground/10 bg-white px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-teal-700/60 focus:outline-none" />
                     </div>
-                  ))}
-                </div>
+                  </div>
+                </details>
+
               </div>
             )}
 
@@ -1604,7 +1585,7 @@ export default function PropertySetupPage() {
               ) : (
                 <>
                   <QuestionMentionTextarea
-                    rows={6}
+                    rows={2}
                     value={questionsPrompt}
                     onChange={setQuestionsPrompt}
                     questions={questions}

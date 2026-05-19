@@ -25,6 +25,7 @@ export type Question = {
   text: string;
   fieldIds: string[];
   sort_order: number;
-
   branches: Branch[];
+  /** If true, walkTree treats this question's fields as unanswered until it has been explicitly asked, even if those fields were captured by an earlier question. */
+  recapture?: boolean;
 };

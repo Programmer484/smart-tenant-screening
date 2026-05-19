@@ -35,7 +35,7 @@ const EXTRACT_TOOL = {
       message_relevant: {
         type: "boolean",
         description:
-          "true if the message is a screening answer OR a property question. false if completely off-topic.",
+          "true if the applicant's latest message is related to this rental application or property. false if the latest message is off-topic, irrelevant chit-chat, or has nothing to do with renting or this application. When in doubt, lean false.",
       },
     },
     required: ["extracted", "message_relevant"],
@@ -93,11 +93,16 @@ function walkTree(
   fields: LandlordField[],
   answers: Record<string, string>,
   variables: PropertyVariable[] = [],
+  completedQIds: Set<string> = new Set(),
 ): WalkResult {
   const sorted = [...qs].sort((a, b) => a.sort_order - b.sort_order);
 
   for (const q of sorted) {
-    const allFilled = q.fieldIds.every((fid) => answers[fid] !== undefined);
+    // Recapture questions are treated as unanswered until explicitly completed,
+    // even if their fields were filled by an earlier question.
+    const allFilled = (q.recapture && !completedQIds.has(q.id))
+      ? false
+      : q.fieldIds.every((fid) => answers[fid] !== undefined);
 
     if (!allFilled) {
       return { nextQuestion: q, branchOutcome: null };
@@ -111,7 +116,7 @@ function walkTree(
     if (outcome === "reject") return { nextQuestion: null, branchOutcome: "reject", triggerBranch: matchingBranch };
 
     if (outcome === "followups" && matchingBranch?.subQuestions.length) {
-      const sub = walkTree(matchingBranch.subQuestions, fields, answers, variables);
+      const sub = walkTree(matchingBranch.subQuestions, fields, answers, variables, completedQIds);
       if (sub.nextQuestion || sub.branchOutcome) return sub;
     }
   }
@@ -283,18 +288,20 @@ export async function POST(req: Request) {
   let offTopicCount           = 0;
   let qualifiedFollowUpCount  = 0;
   let isQualified             = false;
+  let completedQIds           = new Set<string>();
 
   if (sessionId) {
     const db = createServiceClient();
     const { data: ses } = await db
       .from("sessions")
-      .select("status, off_topic_count, qualified_follow_up_count")
+      .select("status, off_topic_count, qualified_follow_up_count, answered_question_ids")
       .eq("id", sessionId)
       .maybeSingle();
     if (ses) {
       offTopicCount          = ses.off_topic_count ?? 0;
       qualifiedFollowUpCount = ses.qualified_follow_up_count ?? 0;
       isQualified            = ses.status === "qualified";
+      completedQIds          = new Set<string>(Array.isArray(ses.answered_question_ids) ? ses.answered_question_ids : []);
     }
   }
 
@@ -309,7 +316,7 @@ export async function POST(req: Request) {
   let extractData;
   try {
     extractData = await callClaude(key, {
-      system: extractSystem + "\n\nYour only job right now is to extract field values from the applicant's message into the FIELD SCHEMA. Only use field IDs from the schema. If a value was implied earlier but not yet extracted, extract it now. Do not write a reply.",
+      system: extractSystem + "\n\nYour only job right now is to extract field values from the applicant's LATEST message into the FIELD SCHEMA. Only use field IDs from the schema. If a value was implied earlier but not yet extracted, extract it now. Set message_relevant based on whether the latest user message (not earlier ones) is related to this rental application. Do not write a reply.",
       messages,
       tools: [EXTRACT_TOOL],
       tool_choice: { type: "tool", name: "extract_fields" },
@@ -342,20 +349,32 @@ export async function POST(req: Request) {
 
   // ── Merge answers and walk question tree ──
 
+  // Determine which question was being asked before extraction (needed for recapture tracking).
+  const { nextQuestion: questionBeforeExtraction } = walkTree(questions, fields, answers, variables, completedQIds);
+
   const mergedAnswers = { ...answers };
   for (const { fieldId, value } of extracted) {
     mergedAnswers[fieldId] = value;
   }
 
-  const { nextQuestion, branchOutcome, triggerBranch } = walkTree(questions, fields, mergedAnswers, variables);
+  // If the current question is a recapture question and all its fields are now filled,
+  // mark it as completed so walkTree advances past it on the next call.
+  if (
+    questionBeforeExtraction?.recapture &&
+    !completedQIds.has(questionBeforeExtraction.id) &&
+    questionBeforeExtraction.fieldIds.every((fid) => mergedAnswers[fid] !== undefined)
+  ) {
+    completedQIds = new Set(completedQIds);
+    completedQIds.add(questionBeforeExtraction.id);
+  }
+
+  const { nextQuestion, branchOutcome, triggerBranch } = walkTree(questions, fields, mergedAnswers, variables, completedQIds);
   const interviewDone = !nextQuestion && branchOutcome === null;
 
   // ── Update counters ──
 
   if (!messageRelevant) {
     offTopicCount += 1;
-  } else {
-    offTopicCount = 0;
   }
 
   if (isQualified) {
@@ -455,6 +474,7 @@ export async function POST(req: Request) {
           property_id: propertyId,
           off_topic_count: offTopicCount,
           qualified_follow_up_count: qualifiedFollowUpCount,
+          answered_question_ids: [...completedQIds],
           updated_at: new Date().toISOString(),
         },
         { onConflict: "id" },

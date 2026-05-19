@@ -199,8 +199,9 @@ export default function ChatPage() {
 
       const chatFields = (sourceData.fields as LandlordField[]) ?? [];
       const chatQuestions = (sourceData.questions as Question[]) ?? [];
+      const chatVariables = (sourceData.variables as PropertyVariable[]) ?? [];
 
-      if (validatePublishableProperty({ fields: chatFields, questions: chatQuestions }).length > 0) {
+      if (validatePublishableProperty({ fields: chatFields, questions: chatQuestions, variables: chatVariables }).length > 0) {
         setMessages([{
           id: "init", role: "assistant",
           text: "This listing is not properly configured. Please contact the property manager.",
@@ -368,7 +369,7 @@ export default function ChatPage() {
   }
 
   async function restart() {
-    if (!config) return;
+    if (!config) { window.location.reload(); return; }
     setRestartDialogOpen(false);
 
     if (sessionId) {

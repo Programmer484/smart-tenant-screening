@@ -53,7 +53,7 @@ type ExistingQuestion = {
   id: string;
   text: string;
   fieldIds: string[];
-  branches?: { condition: { fieldId: string; operator: string; value: string }; outcome: string }[];
+  branches?: { condition: { fieldId: string; operator: string; value: string }; outcome: string; customMessage?: string }[];
 };
 
 function formatExistingQuestions(questions: ExistingQuestion[]): string {
@@ -61,7 +61,10 @@ function formatExistingQuestions(questions: ExistingQuestion[]): string {
     const base = `  - id: "${q.id}", text: "${q.text}", fieldIds: [${q.fieldIds.join(", ")}]`;
     if (!q.branches?.length) return base;
     const branchLines = q.branches
-      .map((b) => `      - [${b.condition.fieldId} ${b.condition.operator} ${b.condition.value}] → ${b.outcome}`)
+      .map((b) => {
+        const msgStr = b.customMessage ? `, customMessage: "${b.customMessage}"` : "";
+        return `      - [${b.condition.fieldId} ${b.condition.operator} ${b.condition.value}] → ${b.outcome}${msgStr}`;
+      })
       .join("\n");
     return `${base}\n    branches:\n${branchLines}`;
   }).join("\n");
@@ -99,7 +102,10 @@ IMPORTANT GUIDELINES:
 - When UPDATING an existing question, return its FULL fieldIds list AND all branches (existing plus any changes). When ADDING a new question, use a new id starting with "q_".
 - Include old question ids in "deletedQuestionIds" if replacing/merging them.
 - FLAT SCHEMA: No arrays/objects. Use numbered slots for multiple occupants (occupant_2_name, occupant_3_name). Occupant 1 is the applicant.
-- Branches: outcomes can be "continue", "followups", "reject". Use "reject" branches to encode screening criteria directly on the question.
+- Branches: outcomes can be "continue", "followups", "reject". Use "reject" branches to encode screening criteria directly on the question. If an outcome is "reject", you CAN optionally include a "customMessage" string explaining why they were rejected (which replaces the default rejection prompt).
+- Branch conditions can reference ANY field in the schema, not just the ones the current question captures. This is intentional.
+- RECAPTURE: If a follow-up question needs to collect an updated value for a field already captured by an earlier question (e.g. confirming a revised move-in date), reuse that field's ID in "fieldIds" and set "recapture": true on the question. This tells the system to re-ask even if the field is already filled. Only set recapture when the question genuinely needs to update a previously collected value.
+- Math Expressions: You can use variables in conditions (e.g. "{{var_id}}"). For dates/numbers, you can add offsets like "{{var_id}} + 15" or "{{var_id}} - 30". DO NOT include words like "days" or "months" — just use the integer.
 
 --- VARIABLES ---
 - You can create or modify variables. Keep them flat. Return the full "variables" array if changing it.
@@ -110,15 +116,15 @@ IMPORTANT GUIDELINES:
 RETURN ONLY A VALID JSON OBJECT:
 {
   "notesToUser": [
-    "Note: Only include notes for important assumptions that require action, missing critical variables, or skipped checks.",
-    "Do NOT explain implementation details or use verbose language."
+    "A very short, simple, human-friendly sentence summarizing what was generated (e.g. 'Added a pet policy and move-in date check').",
+    "Keep this incredibly simple. Never explain implementation details, limitations, assumptions, or variable math."
   ],
   "newFields": [
     { "id": "snake_case_id", "label": "Human label", "value_kind": "text|number|boolean|date|enum", "options": ["only", "for", "enum"] }
   ],
   "questions": [
-    { "id": "q_id", "text": "Question?", "fieldIds": ["field_id"], "branches": [
-      { "condition": { "fieldId": "has_pets", "operator": "==", "value": "true" }, "outcome": "reject", "subQuestions": [] }
+    { "id": "q_id", "text": "Question?", "fieldIds": ["field_id"], "recapture": false, "branches": [
+      { "condition": { "fieldId": "has_pets", "operator": "==", "value": "true" }, "outcome": "reject", "customMessage": "We do not allow pets.", "subQuestions": [] }
     ]}
   ],
   "deletedQuestionIds": [],
@@ -129,7 +135,7 @@ RETURN ONLY A VALID JSON OBJECT:
   "aiInstructions": { "rejectionPrompt": "..." }
 }
 
-If no changes are needed for a particular section, omit the key or return empty. Keep "notesToUser" concise: ONLY mention important assumptions that require user action, missing critical variables, or skipped checks that materially affect screening.
+If no changes are needed for a particular section, omit the key or return empty. Keep "notesToUser" concise: summarize what was added or changed in a human-friendly way. DO NOT explain limitations or variable math.
 
 EXISTING STATE:
 `;
@@ -203,6 +209,7 @@ function parseBranch(v: unknown): Branch | null {
     id: generateId(),
     condition: { fieldId: cond.fieldId, operator: cond.operator, value: String(cond.value).trim() },
     outcome,
+    customMessage: typeof b.customMessage === "string" && b.customMessage.trim() ? b.customMessage.trim() : undefined,
     subQuestions,
   };
 }
@@ -222,7 +229,8 @@ function parseGeneratedQuestion(v: unknown): Question | null {
       if (parsed) branches.push(parsed);
     }
   }
-  return { id: q.id, text: q.text, fieldIds, sort_order: 0, branches };
+  const recapture = q.recapture === true ? true : undefined;
+  return { id: q.id, text: q.text, fieldIds, sort_order: 0, branches, ...(recapture && { recapture }) };
 }
 
 function generateId() {
@@ -274,14 +282,14 @@ export async function POST(req: Request) {
   const existingQuestions = Array.isArray(body.existingQuestions) ? body.existingQuestions : [];
   const variables = Array.isArray(body.variables) ? body.variables : [];
   const links = typeof body.links === "object" ? body.links : {};
-  const aiInstructions = typeof body.aiInstructions === "object" ? body.aiInstructions : {};
+  const AIInstructions = typeof body.aiInstructions === "object" ? body.aiInstructions : {};
 
   try {
-    const system0 = buildSystemPrompt(existingFields, existingQuestions, variables, links, aiInstructions, 3, 0);
+    const system0 = buildSystemPrompt(existingFields, existingQuestions, variables, links, AIInstructions, 3, 0);
 
     const generationPrompt = `${description}
 
-Return the required JSON schema. Use the "notesToUser" array to note any important assumptions.`;
+Return the required JSON schema. Use the "notesToUser" array to summarize what you did in a simple, friendly way.`;
 
     let parsed0: any;
     try {
@@ -315,7 +323,7 @@ Return the required JSON schema. Use the "notesToUser" array to note any importa
       const repairFields = Array.isArray(parsedRepair?.newFields) ? parsedRepair.newFields.map(parseGeneratedField).filter(Boolean) as LandlordField[] : [];
 
       const augmentedFields = [...existingFields, ...result.newFields, ...repairFields];
-      const system1 = buildSystemPrompt(augmentedFields, existingQuestions, variables, links, aiInstructions, 3, 1);
+      const system1 = buildSystemPrompt(augmentedFields, existingQuestions, variables, links, AIInstructions, 3, 1);
 
       let parsed1: any;
       try {

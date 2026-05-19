@@ -4,8 +4,9 @@ import {
   validateLandlordFieldLabel,
   type LandlordField,
 } from "./landlord-field";
-import { validateCondition } from "./landlord-rule";
+import { validateBranchCondition } from "./condition-utils";
 import type { Question } from "./question";
+import type { PropertyVariable } from "./property";
 
 export type PublishValidationIssue = {
   section: "fields" | "questions" | "variables";
@@ -35,6 +36,7 @@ function computeLabel(indices: number[]): string {
 function validateBranches(
   question: Question,
   fields: LandlordField[],
+  variables: PropertyVariable[],
   qLabel: string,
   myIndices: number[],
   issues: PublishValidationIssue[],
@@ -43,7 +45,7 @@ function validateBranches(
   let nextIdx = 0;
   branches.forEach((branch, index) => {
     const branchSuffix = branches.length > 1 ? ` (branch ${index + 1})` : "";
-    const conditionError = validateCondition({ id: branch.id, ...branch.condition }, fields);
+    const conditionError = validateBranchCondition(branch.condition, fields, variables);
 
     if (conditionError) {
       issues.push({
@@ -64,7 +66,7 @@ function validateBranches(
           target: { questionId: question.id, branchId: branch.id },
         });
       }
-      validateQuestions(subQuestions, fields, myIndices, nextIdx, issues);
+      validateQuestions(subQuestions, fields, variables, myIndices, nextIdx, issues);
       nextIdx += subQuestions.length;
     }
   });
@@ -73,6 +75,7 @@ function validateBranches(
 function validateQuestions(
   questions: Question[],
   fields: LandlordField[],
+  variables: PropertyVariable[],
   parentIndices: number[],
   startIdx: number,
   issues: PublishValidationIssue[],
@@ -107,7 +110,7 @@ function validateQuestions(
         });
       }
     }
-    validateBranches(question, fields, label, myIndices, issues);
+    validateBranches(question, fields, variables, label, myIndices, issues);
   });
 }
 
@@ -149,7 +152,7 @@ export function validatePublishableProperty(input: {
   if (questions.length === 0) {
     issues.push({ section: "questions", label: "Questions", message: "add at least one question." });
   }
-  validateQuestions(questions, fields, [], 0, issues);
+  validateQuestions(questions, fields, variables, [], 0, issues);
 
   return issues;
 }

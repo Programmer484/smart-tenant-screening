@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState, useCallback } from "react";
+import TextareaAutosize from "react-textarea-autosize";
 import type { Question } from "@/lib/question";
 
 type MentionState = { query: string; atIndex: number } | null;
@@ -119,9 +120,9 @@ export default function QuestionMentionTextarea({
 
   return (
     <div className="relative">
-      <textarea
+      <TextareaAutosize
         ref={textareaRef}
-        rows={rows}
+        minRows={rows}
         value={value}
         onChange={handleChange}
         onKeyDown={handleKeyDown}

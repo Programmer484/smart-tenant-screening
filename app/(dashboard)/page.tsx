@@ -4,6 +4,10 @@ import Link from "next/link";
 import type { PropertyRecord } from "@/lib/property";
 import { NewPropertyButton } from "@/app/components/NewPropertyButton";
 import { PropertyCardActions } from "@/app/components/PropertyCardActions";
+import { validatePublishableProperty } from "@/lib/property-validation";
+import type { LandlordField } from "@/lib/landlord-field";
+import type { Question } from "@/lib/question";
+import type { PropertyVariable } from "@/lib/property";
 
 export default async function PropertiesPage() {
   const supabase = await createClient();
@@ -14,7 +18,7 @@ export default async function PropertiesPage() {
 
   const { data: properties } = await supabase
     .from("properties")
-    .select("id,title,description,status,fields,questions,created_at,updated_at")
+    .select("id,title,slug,description,status,fields,questions,variables,published_state,created_at,updated_at")
     .order("created_at", { ascending: false });
 
   const list = (properties as PropertyRecord[] | null) ?? [];
@@ -43,6 +47,16 @@ export default async function PropertiesPage() {
             const desc = (p.description ?? "").trim();
             const updatedAt = p.updated_at ?? p.created_at;
             const relTime = updatedAt ? timeAgo(updatedAt) : null;
+
+            // Validate against the same source the chat page uses
+            const sourceData = (status === "published" && (p as any).published_state)
+              ? { ...p, ...(p as any).published_state }
+              : p;
+            const chatFields = (sourceData.fields as LandlordField[]) ?? [];
+            const chatQuestions = (sourceData.questions as Question[]) ?? [];
+            const chatVariables = (sourceData.variables as PropertyVariable[]) ?? [];
+            const chatIssues = validatePublishableProperty({ fields: chatFields, questions: chatQuestions, variables: chatVariables });
+            const chatReady = chatIssues.length === 0;
 
             return (
               <div
@@ -85,13 +99,22 @@ export default async function PropertiesPage() {
                   </div>
                 </Link>
                 <div className="flex items-center gap-2 border-t border-black/5 px-6 py-3">
-                  <Link
-                    href={`/chat/${p.slug || p.id}`}
-                    target="_blank"
-                    className="rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/60 transition-colors hover:bg-[#f7f9f8] hover:text-[#1a2e2a]"
-                  >
-                    Chat
-                  </Link>
+                  {chatReady ? (
+                    <Link
+                      href={`/chat/${p.slug || p.id}`}
+                      target="_blank"
+                      className="rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/60 transition-colors hover:bg-[#f7f9f8] hover:text-[#1a2e2a]"
+                    >
+                      Chat
+                    </Link>
+                  ) : (
+                    <span
+                      title={`Fix ${chatIssues.length} issue${chatIssues.length === 1 ? "" : "s"} before the chat is available`}
+                      className="cursor-not-allowed rounded-lg border border-black/5 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/25"
+                    >
+                      Chat
+                    </span>
+                  )}
                   <Link
                     href={`/applicants?property=${p.id}`}
                     className="rounded-lg border border-black/10 px-3 py-1.5 text-xs font-medium text-[#1a2e2a]/60 transition-colors hover:bg-[#f7f9f8] hover:text-[#1a2e2a]"
