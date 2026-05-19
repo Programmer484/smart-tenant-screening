@@ -70,8 +70,7 @@ export function DeleteVariableDialog({
                   ]
                     .filter(Boolean)
                     .join(" and ")}{" "}
-                  reference{textCount + condCount === 1 ? "s" : ""}{" "}
-                  <span className="font-mono text-violet-600">{token}</span>.
+                  reference{textCount + condCount === 1 ? "s" : ""} this variable.
                 </>
               )}
             </p>
@@ -91,8 +90,7 @@ export function DeleteVariableDialog({
                   <li key={q.id} className="rounded-lg border border-black/8 bg-[#f7f9f8] px-3 py-2.5">
                     <p className="text-sm leading-snug text-[#1a2e2a]/80">&ldquo;{text}&rdquo;</p>
                     <p className="mt-1 text-[11px] text-[#1a2e2a]/35">
-                      <span className="font-mono text-violet-600">{token}</span>{" "}
-                      will be removed from this question
+                      This variable will be removed from this question
                     </p>
                   </li>
                 );

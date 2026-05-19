@@ -49,9 +49,27 @@ function repairJson(raw: string): string {
 
 const VALID_OUTCOMES: BranchOutcome[] = ["continue", "followups", "reject"];
 
+type ExistingQuestion = {
+  id: string;
+  text: string;
+  fieldIds: string[];
+  branches?: { condition: { fieldId: string; operator: string; value: string }; outcome: string }[];
+};
+
+function formatExistingQuestions(questions: ExistingQuestion[]): string {
+  return questions.map((q) => {
+    const base = `  - id: "${q.id}", text: "${q.text}", fieldIds: [${q.fieldIds.join(", ")}]`;
+    if (!q.branches?.length) return base;
+    const branchLines = q.branches
+      .map((b) => `      - [${b.condition.fieldId} ${b.condition.operator} ${b.condition.value}] → ${b.outcome}`)
+      .join("\n");
+    return `${base}\n    branches:\n${branchLines}`;
+  }).join("\n");
+}
+
 export function buildSystemPrompt(
   existingFields: { id: string; label: string; value_kind: string }[],
-  existingQuestions: { id: string; text: string; fieldIds: string[] }[],
+  existingQuestions: ExistingQuestion[],
   variables: PropertyVariable[],
   links: PropertyLinks,
   aiInstructions: Partial<AiInstructions>,
@@ -78,7 +96,7 @@ IMPORTANT GUIDELINES:
 --- FIELDS & QUESTIONS ---
 - A question CAN collect multiple fields, max ${maxFieldsPerQuestion}.
 - Every field ID in "fieldIds" MUST appear in EXISTING FIELDS or in your "newFields" output.
-- When UPDATING an existing question, return its FULL fieldIds list. When ADDING a new question, use a new id starting with "q_".
+- When UPDATING an existing question, return its FULL fieldIds list AND all branches (existing plus any changes). When ADDING a new question, use a new id starting with "q_".
 - Include old question ids in "deletedQuestionIds" if replacing/merging them.
 - FLAT SCHEMA: No arrays/objects. Use numbered slots for multiple occupants (occupant_2_name, occupant_3_name). Occupant 1 is the applicant.
 - Branches: outcomes can be "continue", "followups", "reject". Use "reject" branches to encode screening criteria directly on the question.
@@ -105,7 +123,7 @@ RETURN ONLY A VALID JSON OBJECT:
   ],
   "deletedQuestionIds": [],
   "variables": [
-    { "key": "min_income", "label": "Minimum Income", "value": "3000", "value_kind": "number" }
+    { "id": "min_income", "label": "Minimum Income", "value": "3000", "value_kind": "number" }
   ],
   "links": { "videoUrl": "...", "bookingUrl": "..." },
   "aiInstructions": { "rejectionPrompt": "..." }
@@ -120,7 +138,7 @@ EXISTING STATE:
     prompt += `\nEXISTING FIELDS:\n${fieldDescriptions}\n`;
   }
   if (existingQuestions.length > 0) {
-    prompt += `\nEXISTING QUESTIONS:\n${existingQuestions.map((q) => `  - id: "${q.id}", text: "${q.text}", fieldIds: [${q.fieldIds.join(", ")}]`).join("\n")}\n`;
+    prompt += `\nEXISTING QUESTIONS:\n${formatExistingQuestions(existingQuestions)}\n`;
   }
   if (variables.length > 0) {
     prompt += `\nEXISTING VARIABLES:\n${JSON.stringify(variables, null, 2)}\n`;
@@ -261,36 +279,9 @@ export async function POST(req: Request) {
   try {
     const system0 = buildSystemPrompt(existingFields, existingQuestions, variables, links, aiInstructions, 3, 0);
 
-    // --- STEP 1: INTENT EXPANSION (DRAFT FIRST) ---
-    const expansionPrompt = `You are a rental application expert. The user wants to update their property screening setup.
+    const generationPrompt = `${description}
 
-Your task: Create a "Screening Requirement Plan" based on their prompt.
-- Determine exactly what Fields, Questions, and AI behaviors need to be implemented or changed.
-- Encode all screening criteria as reject branches on questions, not as separate rules.
-- IMPORTANT: Be as minimalist as possible. Do NOT make massive assumptions or add standard rental questions unless explicitly requested. Only address what the user actually asked for.
-- Note any important assumptions that require action, missing critical variables, or skipped checks that materially affect screening.
-- DO NOT repeat obvious details, DO NOT explain every implementation detail. Keep it brief.
-
-DO NOT output JSON. Just output a clear, concise, structured plan.`;
-
-    const expansionContext = `USER PROMPT:\n${description}\n\nCURRENT STATE:\nFields: ${existingFields.length}\nQuestions: ${existingQuestions.length}`;
-
-    const expansionRes = await callClaude(key, {
-      system: expansionPrompt,
-      messages: [{ role: "user", content: expansionContext }],
-      max_tokens: 1024
-    });
-    const expandedPlan = extractText(expansionRes);
-    log("EXPANDED PLAN (AI Thoughts):", expandedPlan);
-
-    // --- STEP 2: GENERATION ---
-    const generationPrompt = `Here is the user's original prompt:
-${description}
-
-Here is the detailed Screening Requirement Plan we've developed based on that prompt:
-${expandedPlan}
-
-Implement this plan and return the required JSON schema. Use the "notesToUser" array to explain to the user the standard practices or assumptions you applied.`;
+Return the required JSON schema. Use the "notesToUser" array to note any important assumptions.`;
 
     let parsed0: any;
     try {
@@ -318,7 +309,7 @@ Implement this plan and return the required JSON schema. Use the "notesToUser" a
     if (orphans.length > 0) {
       log("Repairing orphans:", orphans);
       const repairSystem = buildRepairFieldsPrompt(orphans);
-      const repairContext = `Prompt: ${description}\nPlan: ${expandedPlan}\nQuestions: ${JSON.stringify(result.questions)}`;
+      const repairContext = `Prompt: ${description}\nQuestions: ${JSON.stringify(result.questions)}`;
       const parsedRepair: any = await callClaudeJson(key, repairSystem, repairContext);
 
       const repairFields = Array.isArray(parsedRepair?.newFields) ? parsedRepair.newFields.map(parseGeneratedField).filter(Boolean) as LandlordField[] : [];
@@ -359,7 +350,7 @@ Implement this plan and return the required JSON schema. Use the "notesToUser" a
       (qid, bid, reason) => log(`dropped branch ${bid} on ${qid}: ${reason}`),
     );
 
-    return NextResponse.json({ ok: true, debugPlan: expandedPlan, ...result });
+    return NextResponse.json({ ok: true, ...result });
 
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });

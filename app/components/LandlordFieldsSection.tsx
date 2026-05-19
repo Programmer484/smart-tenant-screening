@@ -55,7 +55,11 @@ function FieldRow({
   const labelBeforeEdit = useRef(field.label);
 
   function handleLabelBlur() {
-    if (duplicateLabelError) {
+    if (duplicateLabelError || emptyLabelError) {
+      if (!labelBeforeEdit.current.trim() && !field.permanent) {
+        onDelete();
+        return;
+      }
       onChange({ ...field, label: labelBeforeEdit.current });
     } else {
       labelBeforeEdit.current = field.label;

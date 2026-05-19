@@ -90,6 +90,7 @@ export default function PropertySetupPage() {
 
   const [questionsPrompt, setQuestionsPrompt] = useState("");
   const [questionsAiOpen, setQuestionsAiOpen] = useState(false);
+  const [aiBehaviorPrompt, setAiBehaviorPrompt] = useState("");
   const [clarifyingQuestions, setClarifyingQuestions] = useState<string[]>([]);
   const [clarifyingAnswers, setClarifyingAnswers] = useState<string[]>([]);
   const [isRecording, setIsRecording] = useState(false);
@@ -452,7 +453,12 @@ export default function PropertySetupPage() {
       body: JSON.stringify({
         description,
         existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind, options: f.options })),
-        existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
+        existingQuestions: questions.map((q) => ({
+          id: q.id,
+          text: q.text,
+          fieldIds: q.fieldIds,
+          branches: q.branches.map((b) => ({ condition: b.condition, outcome: b.outcome })),
+        })),
         variables,
         links,
         aiInstructions,
@@ -479,12 +485,6 @@ export default function PropertySetupPage() {
     ) {
       toast.info("No new items to add — AI found everything is covered.");
       return true;
-    }
-
-    if (data.debugPlan) {
-      console.log("=== AI EXPANSION PLAN (DEBUG) ===");
-      console.log(data.debugPlan);
-      console.log("=================================");
     }
 
     setRuleProposal({
@@ -517,7 +517,12 @@ export default function PropertySetupPage() {
           body: JSON.stringify({
             description,
             existingFields: fields.map((f) => ({ id: f.id, label: f.label, value_kind: f.value_kind, options: f.options })),
-            existingQuestions: questions.map((q) => ({ id: q.id, text: q.text, fieldIds: q.fieldIds })),
+            existingQuestions: questions.map((q) => ({
+              id: q.id,
+              text: q.text,
+              fieldIds: q.fieldIds,
+              branches: q.branches.map((b) => ({ condition: b.condition, outcome: b.outcome })),
+            })),
             variables,
           }),
         });
@@ -616,6 +621,20 @@ export default function PropertySetupPage() {
       console.error("[generateTargeted]", err);
       toast.error("Generation failed — please try again");
       return {};
+    }
+  }
+
+  async function handleGenerateAiBehavior(prompt: string) {
+    if (!prompt.trim()) return;
+    try {
+      setLoadingPhase("questions");
+      const ok = await runGeneration(`Update the AI behavior settings: ${prompt}`);
+      if (ok) setAiBehaviorPrompt("");
+    } catch (err) {
+      console.error("[generateAiBehavior]", err);
+      toast.error("Generation failed — please try again");
+    } finally {
+      setLoadingPhase(null);
     }
   }
 
@@ -906,7 +925,7 @@ export default function PropertySetupPage() {
     function processQuestions(qs: import("@/lib/question").Question[]): import("@/lib/question").Question[] {
       return qs.map((q) => ({
         ...q,
-        text: q.text.split(token).join("").trim(),
+        text: q.text.split(token).join("").replace(/\s+/g, " ").replace(/\s+([.,!?])/g, "$1").trim(),
         branches: q.branches
           .filter((b) => !b.condition.value.includes(token))
           .map((b) => ({ ...b, subQuestions: processQuestions(b.subQuestions) })),
@@ -979,7 +998,7 @@ export default function PropertySetupPage() {
             <button
               type="button"
               onClick={async () => {
-                const issues = validatePublishableProperty({ fields, questions });
+                const issues = validatePublishableProperty({ fields, questions, variables });
                 setPublishIssues(issues);
                 if (issues.length > 0) {
                   toast.error(`Fix ${issues.length} issue${issues.length === 1 ? "" : "s"} before previewing`);
@@ -1071,6 +1090,8 @@ export default function PropertySetupPage() {
                           onClick={() => {
                             if (issue.section === "fields") {
                               setActiveTab("Fields");
+                            } else if (issue.section === "variables") {
+                              setActiveTab("Variables");
                             } else if (hasTarget) {
                               setActiveTab("Questions");
                               setExternalFocus({ id: `${issue.target!.questionId}-${index}`, target: issue.target! });
@@ -1582,26 +1603,8 @@ export default function PropertySetupPage() {
                 </>
               ) : (
                 <>
-                  {!questionsPrompt && (
-                    <div className="flex flex-wrap gap-1.5 mb-1">
-                      {[
-                        "Add a standard pet policy",
-                        "Require 3x income and no evictions",
-                        "Make it student housing friendly",
-                      ].map((t) => (
-                        <button
-                          key={t}
-                          type="button"
-                          onClick={() => setQuestionsPrompt(t)}
-                          className="rounded-full border border-teal-700/20 bg-teal-50/50 px-2.5 py-1 text-[10px] font-medium text-teal-800 transition-colors hover:bg-teal-100/50"
-                        >
-                          {t}
-                        </button>
-                      ))}
-                    </div>
-                  )}
                   <QuestionMentionTextarea
-                    rows={4}
+                    rows={6}
                     value={questionsPrompt}
                     onChange={setQuestionsPrompt}
                     questions={questions}

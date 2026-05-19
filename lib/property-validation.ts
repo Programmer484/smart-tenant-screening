@@ -8,7 +8,7 @@ import { validateCondition } from "./landlord-rule";
 import type { Question } from "./question";
 
 export type PublishValidationIssue = {
-  section: "fields" | "questions";
+  section: "fields" | "questions" | "variables";
   /** Short identifier shown as a pill, e.g. "Q2" or "Field 3" */
   label: string;
   message: string;
@@ -114,9 +114,10 @@ function validateQuestions(
 export function validatePublishableProperty(input: {
   fields: LandlordField[];
   questions: Question[];
+  variables?: import("./property").PropertyVariable[];
 }): PublishValidationIssue[] {
   const issues: PublishValidationIssue[] = [];
-  const { fields, questions } = input;
+  const { fields, questions, variables = [] } = input;
 
   if (fields.length === 0) {
     issues.push({ section: "fields", label: "Fields", message: "add at least one field." });
@@ -138,6 +139,12 @@ export function validatePublishableProperty(input: {
   for (const fieldId of [...new Set(duplicateFieldIds)]) {
     issues.push({ section: "fields", label: "Fields", message: `field id "${fieldId}" is used more than once.` });
   }
+
+  variables.forEach((variable, index) => {
+    if (!variable.label.trim()) {
+      issues.push({ section: "variables", label: `Variable ${index + 1}`, message: "label is required." });
+    }
+  });
 
   if (questions.length === 0) {
     issues.push({ section: "questions", label: "Questions", message: "add at least one question." });

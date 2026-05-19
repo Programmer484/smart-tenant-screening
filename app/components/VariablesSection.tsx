@@ -41,7 +41,11 @@ function VariableRow({
   }
 
   function handleLabelBlur() {
-    if (duplicateLabelError) {
+    if (duplicateLabelError || emptyLabelError) {
+      if (!labelBeforeEdit.current.trim()) {
+        onDelete();
+        return;
+      }
       const reverted: VarRow = { ...row, label: labelBeforeEdit.current };
       if (!isLocked && (!row.id || row.id === labelToId(row.label))) {
         reverted.id = labelToId(labelBeforeEdit.current);

@@ -71,11 +71,10 @@ export function sanitizeQuestions(
   }));
 }
 
-/** Replaces {{key}} tokens with the variable's human label (falls back to the key itself). */
 export function resolveVarTokens(text: string, variables: PropertyVariable[]): string {
   return text.replace(/\{\{([a-z][a-z0-9_]*)\}\}/g, (_, key) => {
     const v = variables.find((v) => v.id === key);
-    return v?.label ?? key;
+    return v?.label || "(unknown variable)";
   });
 }
 

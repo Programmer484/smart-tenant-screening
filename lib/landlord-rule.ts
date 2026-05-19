@@ -42,87 +42,7 @@ export type RuleCondition = {
   value: string;
 };
 
-/** What kind of screening rule this row is (stored as `kind` in JSON). */
-export type RuleKind = "reject" | "ask" | "require";
 
-/** @deprecated Use {@link RuleKind} */
-export type RuleAction = RuleKind;
-
-export type LandlordRule = {
-  /** Unique id for this rule row */
-  id: string;
-  /** Discriminator: reject / require (eligibility) or ask (field visibility). */
-  kind: RuleKind;
-  /** When this is a field-visibility rule: which field’s question it applies to */
-  targetFieldId?: string;
-  /** Evaluated with AND logic */
-  conditions: RuleCondition[];
-  /** Optional custom message when rule is violated */
-  customMessage?: string;
-};
-
-/**
- * JSON value for field-visibility rules (when to show a field’s question). Kept as `"ask"` for stored data.
- */
-export const RULE_KIND_FIELD_VISIBILITY = "ask" as const satisfies RuleKind;
-
-/** @deprecated Use {@link RULE_KIND_FIELD_VISIBILITY} */
-export const RULE_ACTION_FIELD_VISIBILITY = RULE_KIND_FIELD_VISIBILITY;
-
-/** Rules that gate whether a field is included in the interview. */
-export function isFieldVisibilityRule(rule: LandlordRule): boolean {
-  return rule.kind === RULE_KIND_FIELD_VISIBILITY;
-}
-
-/** Normalize a rule object from DB/API (supports legacy `action` key). */
-export function normalizeLandlordRule(raw: unknown): LandlordRule | null {
-  if (typeof raw !== "object" || raw === null) return null;
-  const r = raw as Record<string, unknown>;
-  const kind = (r.kind ?? r.action) as RuleKind | undefined;
-  if (kind !== "reject" && kind !== "require" && kind !== "ask") return null;
-  if (!Array.isArray(r.conditions)) return null;
-  return {
-    id: typeof r.id === "string" ? r.id : "",
-    kind,
-    targetFieldId: typeof r.targetFieldId === "string" ? r.targetFieldId : undefined,
-    conditions: r.conditions as LandlordRule["conditions"],
-    customMessage: typeof r.customMessage === "string" ? r.customMessage : undefined,
-  };
-}
-
-function generateCondId(): string {
-  return Math.random().toString(36).slice(2, 9);
-}
-
-/** Normalize an array of rules from storage (legacy `action`, legacy single-condition rows). */
-export function normalizeRulesList(input: unknown): LandlordRule[] {
-  if (!Array.isArray(input)) return [];
-  const out: LandlordRule[] = [];
-  for (const item of input) {
-    const n = normalizeLandlordRule(item);
-    if (n) {
-      out.push(n);
-      continue;
-    }
-    if (typeof item !== "object" || item === null) continue;
-    const r = item as Record<string, unknown>;
-    if (typeof r.fieldId === "string" && typeof r.operator === "string" && r.value != null) {
-      out.push({
-        id: typeof r.id === "string" ? r.id : generateCondId(),
-        kind: "reject",
-        conditions: [
-          {
-            id: generateCondId(),
-            fieldId: r.fieldId,
-            operator: r.operator,
-            value: String(r.value),
-          },
-        ],
-      });
-    }
-  }
-  return out;
-}
 
 export function defaultOperatorForKind(kind: FieldValueKind): string {
   // Defensive: stale DB/user data may contain unknown value_kind values at runtime.
@@ -154,17 +74,3 @@ export function validateCondition(
   return null;
 }
 
-export function validateRule(
-  rule: LandlordRule,
-  fields: LandlordField[],
-): string | null {
-  if (isFieldVisibilityRule(rule) && !rule.targetFieldId) {
-    return "Choose which field this visibility rule applies to";
-  }
-  if (rule.conditions.length === 0) return "Add at least one condition";
-  for (const c of rule.conditions) {
-    const err = validateCondition(c, fields);
-    if (err) return err;
-  }
-  return null;
-}

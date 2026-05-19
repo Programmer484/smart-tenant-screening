@@ -90,21 +90,20 @@ Variables are landlord-defined values that can be reused in question text or bra
 ```ts
 type PropertyVariable = {
   id: string;
-  key: string;
   label: string;
   value: string;
   value_kind?: "text" | "number" | "date" | "boolean" | "enum";
 };
 ```
 
-A question can reference a variable with `{{key}}`. Branch condition values can also use simple expressions for date and number fields:
+A question can reference a variable with `{{id}}`. Branch condition values can also use simple expressions for date and number fields:
 
 ```text
-{{key}}
-{{key}} + N
-{{key}} - N
-{{key}} + {{other_key}}
-{{key}} - {{other_key}}
+{{id}}
+{{id}} + N
+{{id}} - N
+{{id}} + {{other_id}}
+{{id}} - {{other_id}}
 ```
 
 For dates, offsets are days. For numbers, offsets are numeric.
@@ -114,11 +113,10 @@ For dates, offsets are days. For numbers, offsets are numeric.
 ```text
 Landlord enters an AI prompt
   -> UI expands prompt with referenced questions when @mentions are used
-  -> UI asks /api/clarify-prompt whether more context is needed
-  -> If clarification is needed, landlord answers or skips
-  -> UI sends the final description to /api/generate-property
-  -> AI creates a short screening requirement plan
-  -> AI converts that plan into JSON changes
+  -> Call 1: UI asks /api/clarify-prompt whether more context is needed
+  -> If clarification questions are returned, landlord answers or skips
+  -> Call 2: UI sends the final description to /api/generate-property
+  -> AI generates JSON changes directly
   -> Server parses, validates, and repairs the proposal
   -> UI shows the proposal in a review modal
   -> Landlord accepts or cancels
@@ -127,6 +125,8 @@ Landlord enters an AI prompt
 ```
 
 AI generation produces proposals. It does not silently mutate the property. The landlord reviews and accepts changes before they are applied.
+
+The normal path uses exactly two AI calls: one to decide whether clarification is needed, and one to generate the proposal. A repair pass may add a third call in rare cases where the generator references undefined field IDs.
 
 ## Prompt Preparation
 
@@ -154,7 +154,7 @@ REFERENCED QUESTIONS (with full branch structure - modify or extend these as nee
 
 This gives the generator enough context to modify existing branches or follow-ups instead of creating duplicates.
 
-## Clarification Preflight
+## Clarification Preflight (Call 1)
 
 Before generating the proposal, `handleGenerateQuestions()` calls `/api/clarify-prompt`.
 
@@ -167,7 +167,7 @@ The system prompt asks for up to four short clarification questions only when th
 - Maximum occupant count.
 - Whether a condition should reject or only flag for review.
 
-The route includes existing fields, existing questions, and variables so the model does not ask for context that already exists.
+The route receives existing fields, existing questions (with their branches), and variables so the model does not ask for context that already exists.
 
 Expected response:
 
@@ -189,11 +189,11 @@ Q: What income threshold should trigger rejection?
 A: Less than 3x monthly rent.
 ```
 
-## Property-Wide Generation
+## Generation (Call 2)
 
 The main generator is `/api/generate-property`.
 
-The UI sends:
+The UI sends the full current state:
 
 ```json
 {
@@ -202,10 +202,17 @@ The UI sends:
     { "id": "monthly_income", "label": "Monthly income", "value_kind": "number" }
   ],
   "existingQuestions": [
-    { "id": "q_income", "text": "What is your monthly income?", "fieldIds": ["monthly_income"] }
+    {
+      "id": "q_income",
+      "text": "What is your monthly income?",
+      "fieldIds": ["monthly_income"],
+      "branches": [
+        { "condition": { "fieldId": "monthly_income", "operator": "<", "value": "5400" }, "outcome": "reject" }
+      ]
+    }
   ],
   "variables": [
-    { "key": "monthly_rent", "label": "Monthly rent", "value": "1800", "value_kind": "number" }
+    { "id": "monthly_rent", "label": "Monthly rent", "value": "1800", "value_kind": "number" }
   ],
   "links": {
     "videoUrl": "",
@@ -218,64 +225,11 @@ The UI sends:
 }
 ```
 
-The property-wide generator can propose changes to `newFields`, `questions`, `deletedQuestionIds`, `variables`, `links`, `aiInstructions`, and `notesToUser`.
+The generator can propose changes to `newFields`, `questions`, `deletedQuestionIds`, `variables`, `links`, `aiInstructions`, and `notesToUser`.
 
-## Step 1: Screening Requirement Plan
+The system prompt includes the full existing state — fields (with valid operators per type), questions (with their branches), and variables — so the AI can make targeted modifications without clobbering existing configuration.
 
-`/api/generate-property` first asks Claude to create a concise plan before asking for JSON.
-
-The planning prompt says the model is a rental application expert and must:
-
-- Determine the fields, questions, and AI behaviors needed.
-- Encode screening criteria as reject branches on questions.
-- Stay minimalist.
-- Avoid adding standard rental questions unless explicitly requested.
-- Note only important assumptions, missing critical variables, or skipped checks.
-- Avoid JSON in this planning step.
-
-The user message for this phase includes:
-
-```text
-USER PROMPT:
-{description}
-
-CURRENT STATE:
-Fields: {existingFields.length}
-Questions: {existingQuestions.length}
-```
-
-The plan is logged in development and returned to the UI as `debugPlan`.
-
-## Step 2: JSON Generation
-
-The second property-wide call asks Claude to implement the plan as JSON.
-
-The user message includes:
-
-```text
-Here is the user's original prompt:
-{description}
-
-Here is the detailed Screening Requirement Plan we've developed based on that prompt:
-{expandedPlan}
-
-Implement this plan and return the required JSON schema. Use the "notesToUser" array to explain to the user the standard practices or assumptions you applied.
-```
-
-The system prompt tells the model it can update data fields, interview questions, variables, links, and AI settings.
-
-Important generation rules:
-
-- Only return arrays or objects that need modification.
-- A question can collect multiple fields, with a default max of three.
-- Every `fieldIds` entry must refer to an existing field or a new field in `newFields`.
-- Updated questions must return the full `fieldIds` list.
-- New question IDs should start with `q_`.
-- Replaced or merged questions should be listed in `deletedQuestionIds`.
-- The schema must stay flat: no arrays, nested objects, or collection fields.
-- Screening criteria should be encoded directly as question branches.
-- Variables can be created or modified; if variables change, return the full `variables` array.
-- Links and AI behavior settings should be included only when changed.
+The user message is simply the landlord's description (with any clarifying answers appended), followed by a note to use `notesToUser` for important assumptions.
 
 Expected response shape:
 
@@ -312,7 +266,7 @@ Expected response shape:
   "deletedQuestionIds": [],
   "variables": [
     {
-      "key": "minimum_income",
+      "id": "minimum_income",
       "label": "Minimum monthly income",
       "value": "5400",
       "value_kind": "number"
@@ -327,7 +281,7 @@ Expected response shape:
 }
 ```
 
-The rule engine supports `{{key}}`, `{{key}} + N`, `{{key}} - N`, and variable-to-variable offsets. It does not evaluate multiplication expressions, so generated rules should use concrete variables such as `minimum_income` when a computed threshold is needed.
+The rule engine supports `{{id}}`, `{{id}} + N`, `{{id}} - N`, and variable-to-variable offsets. It does not evaluate multiplication expressions, so generated rules should use concrete variables such as `minimum_income` when a computed threshold is needed.
 
 ## Field and Question Validation
 
@@ -509,7 +463,7 @@ When the proposal includes `variables`, the UI treats it as the proposed full va
 The merge behavior is:
 
 ```text
-protected existing variables still referenced by {{key}}
+protected existing variables still referenced by {{id}}
   + proposed variables
 ```
 
@@ -544,7 +498,6 @@ Publishing stores the active configuration in `published_state` as well.
 | Responsibility | Owner |
 | --- | --- |
 | Decide whether clarification is useful | Claude via `/api/clarify-prompt` |
-| Draft high-level screening plan | Claude via `/api/generate-property` |
 | Generate JSON proposal | Claude via `/api/generate-property` or `/api/generate-fields` |
 | Parse JSON and repair common formatting issues | Server code |
 | Validate field and question shapes | Server code |

@@ -42,11 +42,18 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Missing description" }, { status: 400 });
   }
 
+  type ExistingQuestion = {
+    id: string;
+    text: string;
+    fieldIds: string[];
+    branches?: { condition: { fieldId: string; operator: string; value: string }; outcome: string }[];
+  };
+
   const existingFields = Array.isArray(rec.existingFields)
     ? (rec.existingFields as { id: string; label: string; value_kind: string }[])
     : [];
   const existingQuestions = Array.isArray(rec.existingQuestions)
-    ? (rec.existingQuestions as { id: string; text: string; fieldIds: string[] }[])
+    ? (rec.existingQuestions as ExistingQuestion[])
     : [];
   const variables = Array.isArray(rec.variables) ? (rec.variables as PropertyVariable[]) : [];
 
@@ -55,7 +62,13 @@ export async function POST(req: Request) {
     userPrompt += `\n\nEXISTING FIELDS:\n${existingFields.map(f => `- ${f.id} (${f.value_kind}): ${f.label}`).join("\n")}`;
   }
   if (existingQuestions.length) {
-    userPrompt += `\n\nEXISTING QUESTIONS:\n${existingQuestions.map(q => `- ${q.id}: ${q.text}`).join("\n")}`;
+    const questionLines = existingQuestions.map(q => {
+      const base = `- ${q.id}: ${q.text}`;
+      if (!q.branches?.length) return base;
+      const branchLines = q.branches.map(b => `    [${b.condition.fieldId} ${b.condition.operator} ${b.condition.value}] → ${b.outcome}`).join("\n");
+      return `${base}\n${branchLines}`;
+    }).join("\n");
+    userPrompt += `\n\nEXISTING QUESTIONS:\n${questionLines}`;
   }
   if (variables.length) {
     userPrompt += `\n\nPROPERTY VARIABLES:\n${variables.map(v => `- {{${v.id}}} (${v.value_kind ?? "text"}) = ${v.value}`).join("\n")}`;

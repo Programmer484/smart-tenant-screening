@@ -1,5 +1,4 @@
 import type { LandlordField } from "./landlord-field";
-import type { LandlordRule } from "./landlord-rule";
 import type { PropertyVariable } from "./property";
 import { resolveVarTokens } from "./condition-utils";
 
@@ -10,7 +9,7 @@ const EXPR_RE = /^\{\{([a-z][a-z0-9_]*)\}\}(?:\s*([+-])\s*(?:(\d+)|\{\{([a-z][a-
  * Resolves a condition value that may be a variable expression.
  * Returns the original string if it isn't an expression or the variable is unknown.
  */
-export function resolveExpression(
+function resolveExpression(
   expr: string,
   variables: PropertyVariable[],
   value_kind: LandlordField["value_kind"],
@@ -92,105 +91,6 @@ function satisfies(
   return true;
 }
 
-export type RuleViolation = {
-  rule: LandlordRule;
-  message?: string;
-  customMessage?: string;
-};
-
-/**
- * Evaluates an AND block of conditions.
- * Returns true if ALL conditions match.
- * Returns false if ANY condition definitely fails.
- * Returns null if the block could still match but depends on missing answers.
- */
-export function evaluateRule(
-  rule: LandlordRule,
-  fields: LandlordField[],
-  answers: Record<string, string>,
-  variables: PropertyVariable[] = [],
-): boolean | null {
-  if (!rule.conditions || rule.conditions.length === 0) return false;
-
-  let hasUnknown = false;
-
-  for (const cond of rule.conditions) {
-    const actual = answers[cond.fieldId];
-    if (actual === undefined) {
-      hasUnknown = true;
-      continue;
-    }
-
-    const field = fields.find((f) => f.id === cond.fieldId);
-    if (!field) {
-      hasUnknown = true;
-      continue;
-    }
-
-    const resolvedValue = variables.length
-      ? resolveExpression(cond.value, variables, field.value_kind)
-      : cond.value;
-
-    if (!satisfies(actual, cond.operator, resolvedValue, field.value_kind)) {
-      return false;
-    }
-  }
-
-  if (hasUnknown) return null;
-  return true;
-}
-
-/**
- * Returns every rejection rule that evaluates to TRUE (meaning the applicant hit a rejection criteria).
- * Rules with unanswered fields return null and are skipped.
- */
-export function evaluateRules(
-  rules: LandlordRule[],
-  fields: LandlordField[],
-  answers: Record<string, string>,
-  variables: PropertyVariable[] = [],
-): RuleViolation[] {
-  const violations: RuleViolation[] = [];
-
-  for (const rule of rules) {
-    if (rule.kind !== "reject") continue;
-    const isMet = evaluateRule(rule, fields, answers, variables);
-    if (isMet === true) {
-      violations.push({ rule, customMessage: rule.customMessage });
-    }
-  }
-
-  const requireRules = rules.filter((r) => r.kind === "require");
-  if (requireRules.length > 0) {
-    let someMet = false;
-    let someUnknown = false;
-    for (const rule of requireRules) {
-      const isMet = evaluateRule(rule, fields, answers, variables);
-      if (isMet === true) {
-        someMet = true;
-        break;
-      } else if (isMet === null) {
-        someUnknown = true;
-      }
-    }
-
-    if (!someMet && !someUnknown) {
-      const p = requireRules.map(r => r.conditions.map(c => {
-        const f = fields.find(x => x.id === c.fieldId);
-        const op = f?.value_kind === 'date' ? DATE_OP_PHRASES[c.operator] : OP_PHRASES[c.operator];
-        const displayValue = variables.length ? resolveVarTokens(c.value, variables) : c.value;
-        return `${f?.label} ${op || c.operator} ${displayValue}`;
-      }).join(" AND ")).join(" OR ");
-
-      violations.push({
-        rule: { id: "require_failed", kind: "require", conditions: [] },
-        message: `Did not meet any allowed profile. Allowed profiles: ${p}`
-      });
-    }
-  }
-
-  return violations;
-}
 
 const OP_PHRASES: Record<string, string> = {
   "==":  "is equal to",
@@ -246,26 +146,3 @@ export function evalBranchCondition(
   return satisfies(actual, condition.operator, resolvedValue, field.value_kind);
 }
 
-/** Human-readable description of a rule, e.g. "Monthly income is at most 3000 AND Credit is less than 600" */
-export function describeViolation(v: RuleViolation, fields: LandlordField[], variables: PropertyVariable[] = []): string {
-  if (v.message) return v.message;
-
-  const parts = v.rule.conditions.map(cond => {
-    const field = fields.find(f => f.id === cond.fieldId);
-    const displayValue = variables.length ? resolveVarTokens(cond.value, variables) : cond.value;
-    if (!field) return `[Unknown field] ${cond.operator} ${displayValue}`;
-
-    if (field.value_kind === "boolean") {
-      const label = field.label.replace(/\?$/, "").trim();
-      const expected = cond.value === "true";
-      if (cond.operator === "==") return `"${label}" is ${expected ? "Yes" : "No"}`;
-      if (cond.operator === "!=") return `"${label}" is not ${expected ? "Yes" : "No"}`;
-    }
-
-    const phrases = field.value_kind === "date" ? DATE_OP_PHRASES : OP_PHRASES;
-    const phrase = phrases[cond.operator] ?? cond.operator;
-    return `${field.label} ${phrase} ${displayValue}`;
-  });
-
-  return parts.join(" AND ");
-}
